@@ -46,6 +46,9 @@ pub struct Frame {
     pub impact: Option<Vec2>,
     /// Thrust acceleration requested by landing guidance (zero before the landing burn).
     pub accel_cmd: Vec3,
+    /// Cold gas left (kg).
+    #[serde(default)]
+    pub rcs_gas: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

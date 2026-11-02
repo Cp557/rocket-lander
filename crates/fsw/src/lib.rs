@@ -3,8 +3,10 @@
 //! Inputs are `sim::SensorFrame`s and outputs are `sim::Commands`; the flight software
 //! never reads the true state. It models the vehicle with `Vehicle::nominal()`.
 
+pub mod attitude;
 pub mod computer;
 pub mod control;
+pub mod deck;
 pub mod gfold;
 pub mod guidance;
 pub mod nav;

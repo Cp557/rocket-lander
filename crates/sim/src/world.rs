@@ -1,6 +1,6 @@
 //! The simulated world: true state, actuator dynamics, wind and sensors.
 
-use glam::{DVec2, DVec3};
+use glam::{DQuat, DVec2, DVec3};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,10 @@ use serde::{Deserialize, Serialize};
 use crate::dispersion::Faults;
 use crate::dynamics::{Inputs, State, rk4};
 use crate::env::{Wind, gravity_vec, pressure};
-use crate::sensors::{DeckFix, SensorFrame, Sensors};
+use crate::sensors::{
+    DECK_ATT_NOISE, DECK_DELAY, DECK_PERIOD, DECK_POS_NOISE, DECK_VEL_NOISE, DeckFix, SensorFrame,
+    Sensors, due, noise3,
+};
 use crate::ship::Ship;
 use crate::vehicle::Vehicle;
 use crate::{aero, contact};
@@ -69,9 +72,12 @@ pub struct World {
     pub engine_failed: bool,
     /// The drone ship to land on; `None` lands on the ground.
     pub ship: Option<Ship>,
+    /// Cold gas left (kg); the thrusters fall silent when it runs out.
+    pub rcs_gas: f64,
     engine_out_after: Option<f64>,
     /// Time spent firing three engines while descending, which is when the engine can fail.
     descending_burn_time: f64,
+    next_deck_report: f64,
     sensors: Sensors,
     rng: StdRng,
 }
@@ -98,8 +104,10 @@ impl World {
             info: WorldInfo::default(),
             engine_failed: false,
             ship: None,
+            rcs_gas: vehicle.rcs_gas,
             engine_out_after: faults.engine_out_after,
             descending_burn_time: 0.0,
+            next_deck_report: 0.0,
             sensors,
             rng,
         };
@@ -130,6 +138,7 @@ impl World {
             deck: self.ship.map(|ship| ship.pose(self.t)),
         };
 
+        self.rcs_gas = (self.rcs_gas - v.rcs_gas_flow(a.rcs) * dt).max(0.0);
         let before = self.state;
         self.state = rk4(&v, &before, &inputs, dt);
         self.state.mass = self.state.mass.max(v.dry_mass);
@@ -151,16 +160,19 @@ impl World {
             self.info.legs_touching > 0,
             &mut self.rng,
         );
-        let deck = self.ship.map(|ship| {
-            let pose = ship.pose(self.t);
+        let deck_due = due(self.t, &mut self.next_deck_report, DECK_PERIOD);
+        let deck = self.ship.filter(|_| deck_due).map(|ship| {
+            let pose = ship.pose((self.t - DECK_DELAY).max(0.0));
             DeckFix {
-                pos: pose.origin,
-                vel: pose.vel,
+                pos: pose.origin + noise3(&mut self.rng, DECK_POS_NOISE),
+                vel: pose.vel + noise3(&mut self.rng, DECK_VEL_NOISE),
+                att: pose.att * DQuat::from_scaled_axis(noise3(&mut self.rng, DECK_ATT_NOISE)),
             }
         });
         SensorFrame {
             engine_out: self.engine_failed,
             deck,
+            rcs_gas: self.rcs_gas,
             ..frame
         }
     }
@@ -184,6 +196,7 @@ impl World {
         } else {
             cmd.engines
         };
+        let gas_left = self.rcs_gas > 0.0;
         let v = &self.vehicle;
         let a = &mut self.act;
         let lit = has_propellant && engines > 0;
@@ -220,7 +233,11 @@ impl World {
             DVec3::ZERO
         };
         a.fins = slew3(a.fins, fin_target, v.fin_rate * dt);
-        a.rcs = cmd.rcs.clamp(-v.rcs_torque, v.rcs_torque);
+        a.rcs = if gas_left {
+            cmd.rcs.clamp(-v.rcs_torque, v.rcs_torque)
+        } else {
+            DVec3::ZERO
+        };
     }
 
     fn compute_info(&self, thrust: f64) -> WorldInfo {
@@ -411,6 +428,28 @@ mod tests {
         assert!((world.act.thrust_level - 2.0).abs() < 0.05);
         // The survivor at +x pushes off center, pitching the body about -y.
         assert!(world.state.omega.y < -1e-3 && world.state.omega.x.abs() < 1e-9);
+    }
+
+    #[test]
+    fn thrusters_fall_silent_when_the_gas_runs_out() {
+        let mut world = world_at(
+            DVec3::new(0.0, 0.0, 300_000.0),
+            DVec3::ZERO,
+            30_000.0,
+            Actuators::default(),
+        );
+        world.rcs_gas = 1.0;
+        let cmd = Commands {
+            rcs: DVec3::new(150e3, 0.0, 0.0),
+            ..Default::default()
+        };
+        // Full pitch torque spends 150e3 / 18 N of 70 s gas: about 12 kg/s.
+        run(&mut world, &cmd, 1.0);
+        assert_eq!(world.rcs_gas, 0.0);
+        assert_eq!(world.act.rcs, DVec3::ZERO);
+        let spun = world.state.omega.x;
+        run(&mut world, &cmd, 1.0);
+        assert!((world.state.omega.x - spun).abs() < 1e-9);
     }
 
     #[test]

@@ -46,6 +46,11 @@ pub struct Vehicle {
 
     /// Maximum cold-gas thruster torque about body x, y, z.
     pub rcs_torque: DVec3,
+    /// Cold gas aboard at the start (kg), its specific impulse (s), and the thrusters'
+    /// lever arm about each axis (m): torque / lever is the thrust spent.
+    pub rcs_gas: f64,
+    pub rcs_isp: f64,
+    pub rcs_lever: DVec3,
 
     pub axial_coeff_base_first: f64,
     pub axial_coeff_nose_first: f64,
@@ -88,6 +93,9 @@ impl Vehicle {
             fin_deploy_time: 2.0,
 
             rcs_torque: DVec3::new(150e3, 150e3, 30e3),
+            rcs_gas: 500.0,
+            rcs_isp: 70.0,
+            rcs_lever: DVec3::new(18.0, 18.0, 2.0),
 
             axial_coeff_base_first: 1.0,
             axial_coeff_nose_first: 0.5,
@@ -115,6 +123,11 @@ impl Vehicle {
     pub fn engine_thrust(&self, pressure: f64) -> f64 {
         self.engine_thrust_vac
             - (self.engine_thrust_vac - self.engine_thrust_sl) * pressure / SEA_LEVEL_PRESSURE
+    }
+
+    /// Cold gas spent per second to give a body torque.
+    pub fn rcs_gas_flow(&self, torque: DVec3) -> f64 {
+        (torque.abs() / self.rcs_lever).element_sum() / (self.rcs_isp * G0)
     }
 
     /// Propellant mass flow of one engine at full throttle.

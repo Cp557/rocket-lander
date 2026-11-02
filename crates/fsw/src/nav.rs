@@ -1,5 +1,5 @@
-//! Navigation: attitude from gyro integration blended with star-tracker fixes, and an
-//! 11-state Kalman filter driven by the IMU: position, velocity, accelerometer bias, and
+//! Navigation: attitude from a multiplicative Kalman filter on the gyro and star tracker
+//! (`attitude`), and an 11-state Kalman filter driven by the IMU: position, velocity, accelerometer bias, and
 //! the steady wind at the 10 km reference altitude. GPS and the radar altimeter correct
 //! it, and so does the air-relative crossflow the flight computer reads from the side
 //! force, which is what makes the wind observable. The crossflow only corrects the wind:
@@ -15,6 +15,8 @@ use std::ops::Range;
 use glam::{DMat3, DQuat, DVec2, DVec3};
 use nalgebra::{Matrix3, SMatrix, SVector};
 use sim::SensorFrame;
+
+use crate::attitude::AttitudeFilter;
 use sim::env::{NOMINAL_SHEAR_EXPONENT, Wind, gravity_vec, wind_profile};
 use sim::sensors::{ALTIMETER_NOISE, GPS_POS_NOISE, GPS_VEL_NOISE};
 
@@ -24,8 +26,6 @@ const WIND_STATES: Range<usize> = 9..STATES;
 type Vec11 = SVector<f64, STATES>;
 type Mat11 = SMatrix<f64, STATES, STATES>;
 
-/// Fraction of each star-tracker fix blended into the attitude (complementary filter).
-const STAR_TRACKER_GAIN: f64 = 0.05;
 /// Unmodeled acceleration (attitude error times thrust, drag), m/s^2 per sqrt(Hz).
 const ACCEL_PROCESS_NOISE: f64 = 0.3;
 const BIAS_PROCESS_NOISE: f64 = 1e-3;
@@ -62,8 +62,7 @@ impl NavState {
 pub struct Navigator {
     x: Vec11,
     p: Mat11,
-    att: DQuat,
-    omega: DVec3,
+    attitude: AttitudeFilter,
 }
 
 impl Navigator {
@@ -80,8 +79,7 @@ impl Navigator {
         Self {
             x,
             p,
-            att,
-            omega: DVec3::ZERO,
+            attitude: AttitudeFilter::new(att),
         }
     }
 
@@ -89,8 +87,8 @@ impl Navigator {
         NavState {
             pos: glam3(&self.x, 0),
             vel: glam3(&self.x, 3),
-            att: self.att,
-            omega: self.omega,
+            att: self.attitude.att(),
+            omega: self.attitude.omega(),
             accel_bias: glam3(&self.x, 6),
             pos_sigma: (self.p[(0, 0)] + self.p[(1, 1)] + self.p[(2, 2)]).sqrt(),
             wind: Wind::steady(DVec2::new(self.x[9], self.x[10])),
@@ -98,11 +96,10 @@ impl Navigator {
     }
 
     pub fn update(&mut self, s: &SensorFrame) {
-        self.att = (self.att * DQuat::from_scaled_axis(s.gyro * s.dt)).normalize();
+        self.attitude.propagate(s.gyro, s.dt);
         if let Some(fix) = s.star_tracker {
-            self.att = self.att.slerp(fix, STAR_TRACKER_GAIN).normalize();
+            self.attitude.correct(fix);
         }
-        self.omega = s.gyro;
 
         self.predict(s.accel, s.dt);
         if let Some(gps) = s.gps {
@@ -131,7 +128,7 @@ impl Navigator {
     /// Correct with the air-relative crossflow `(x, y)` in the body frame, with noise
     /// `sigma` per axis: the body-frame sideways part of velocity minus wind.
     pub fn correct_crossflow(&mut self, crossflow: DVec2, sigma: f64) {
-        let to_body = rotation(self.att).transpose();
+        let to_body = rotation(self.attitude.att()).transpose();
         let profile = wind_profile(self.x[2], NOMINAL_SHEAR_EXPONENT);
         let mut h = SMatrix::<f64, 2, STATES>::zeros();
         for row in 0..2 {
@@ -154,7 +151,7 @@ impl Navigator {
         let pos = glam3(&self.x, 0);
         let vel = glam3(&self.x, 3);
         let bias = glam3(&self.x, 6);
-        let accel = self.att * (specific_force - bias) + gravity_vec(pos.z);
+        let accel = self.attitude.att() * (specific_force - bias) + gravity_vec(pos.z);
         self.x
             .fixed_rows_mut::<3>(0)
             .copy_from(&na(pos + vel * dt + accel * (0.5 * dt * dt)));
@@ -162,7 +159,7 @@ impl Navigator {
             .fixed_rows_mut::<3>(3)
             .copy_from(&na(vel + accel * dt));
 
-        let r = rotation(self.att);
+        let r = rotation(self.attitude.att());
         let mut phi = Mat11::identity();
         phi.fixed_view_mut::<3, 3>(0, 3)
             .copy_from(&(Matrix3::identity() * dt));
@@ -262,6 +259,7 @@ mod tests {
                 leg_contact: false,
                 engine_out: false,
                 deck: None,
+                rcs_gas: 0.0,
             };
             nav.update(&frame);
         }

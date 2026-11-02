@@ -4,9 +4,11 @@
 use glam::{DVec2, DVec3};
 use serde::{Deserialize, Serialize};
 use sim::env::{density, gravity, pressure};
+use sim::sensors::DECK_DELAY;
 use sim::{Commands, SensorFrame, State, Vehicle};
 
 use crate::control::{self, CONTROL_PERIOD, Effectors, double_integrator_lqr};
+use crate::deck::{DeckPredictor, DeckState};
 use crate::gfold::{self, Plan};
 use crate::guidance;
 use crate::nav::{NavState, Navigator};
@@ -59,6 +61,14 @@ const VELOCITY_ONLY_GAIN: f64 = 0.8;
 const REPLAN_PERIOD: f64 = 0.5;
 /// Stop replanning this close to the end of the plan; the last seconds are tracked as-is.
 const REPLAN_CUTOFF: f64 = 2.0;
+/// While coasting over the top, let the attitude drift this far from its target (rad) and
+/// turn this slowly (rad/s) before spending cold gas on it.
+const COAST_DEADBAND: f64 = 0.0873; // 5 degrees
+const COAST_DEADBAND_RATE: f64 = 0.0087; // 0.5 degrees/s
+/// Turn rates on cold gas alone (rad/s): the gas a turn costs grows with how fast it
+/// spins up. The flip is pressed for time; the coast has minutes.
+const FLIP_TURN_RATE: f64 = 0.0873; // 5 degrees/s
+const COAST_TURN_RATE: f64 = 0.0262; // 1.5 degrees/s
 /// Ticks between impact predictions outside boostback.
 const PREDICT_EVERY: u64 = 5;
 /// If no plan is found by this fraction of the ignition altitude, ignite on the fallback law.
@@ -67,13 +77,23 @@ const FORCED_IGNITION: f64 = 0.8;
 /// falling fast through thin air can reach its estimated ignition altitude long before
 /// drag has slowed it enough for a plan.
 const IGNITION_RETRY: f64 = 0.2;
-/// Over the last meters to a moving deck, descend on a profile relative to the deck: the
-/// sink rate falls from sqrt(v_td^2 + 2 a h) to the touchdown speed, with a = this
-/// deceleration, tracked at `DECK_MATCH_GAIN` (/s).
-const DECK_MATCH_HEIGHT: f64 = 15.0;
-const DECK_MATCH_DECEL: f64 = 2.0;
-const DECK_MATCH_GAIN: f64 = 2.0;
+/// At sea, below this height above the deck the touchdown is timed for a calm moment: the
+/// deck level and not rising, as predicted from its reports.
+const CALM_HEIGHT: f64 = 40.0;
+/// Scales of a bad moment: deck tilt (rad) and the deck rising (m/s).
+const CALM_TILT: f64 = 0.02;
+const CALM_RISE: f64 = 0.3;
+/// Speed toward the deck at touchdown.
 const DECK_TOUCHDOWN_SPEED: f64 = 1.5;
+/// Planning bounds for the timed approach: times up to three times a steady approach are
+/// tried, keeping the acceleration this far inside what the engine can do (m/s^2), up to
+/// this throttle.
+const CALM_CANDIDATES: usize = 90;
+const CALM_ACCEL_MARGIN: f64 = 1.0;
+const PLAN_THROTTLE: f64 = 0.85;
+/// Over the last fraction of a second, just hold the touchdown speed relative to the deck.
+const DECK_FINAL_TIME: f64 = 0.3;
+const DECK_MATCH_GAIN: f64 = 2.0;
 const MIN_FIN_PRESSURE: f64 = 100.0;
 /// Below this dynamic pressure the side force is too weak to read the crossflow from.
 const CROSSFLOW_MIN_PRESSURE: f64 = 500.0;
@@ -127,8 +147,12 @@ pub struct FlightComputer {
     accel_cmd: DVec3,
     /// Engine health monitoring has reported a failed engine in the three-engine group.
     engine_out: bool,
-    /// The drone ship's deck velocity, when landing on one.
-    deck_vel: Option<DVec3>,
+    /// The drone ship's deck motion, learned from its reports.
+    deck: Option<DeckPredictor>,
+    /// When to touch down on the deck, once chosen.
+    touchdown_at: Option<f64>,
+    /// Cold gas left in the thruster tank (kg), as reported.
+    rcs_gas: f64,
     /// Modeled body angular acceleration the lagging actuators are delivering from the
     /// attitude commands so far.
     delivered: DVec3,
@@ -158,7 +182,9 @@ impl FlightComputer {
             last_cmd: Commands::default(),
             accel_cmd: DVec3::ZERO,
             engine_out: false,
-            deck_vel: None,
+            deck: None,
+            touchdown_at: None,
+            rcs_gas: vehicle.rcs_gas,
             delivered: DVec3::ZERO,
         }
     }
@@ -200,10 +226,21 @@ impl FlightComputer {
 
     pub fn step(&mut self, sensors: &SensorFrame) -> Commands {
         self.engine_out |= sensors.engine_out;
-        // On a drone ship the landing target is wherever the ship says its deck is.
-        if let Some(deck) = sensors.deck {
-            self.pad = deck.pos;
-            self.deck_vel = Some(deck.vel);
+        self.rcs_gas = sensors.rcs_gas;
+        // On a drone ship the landing target is wherever its deck is: as reported on the
+        // way down, and predicted from the swell during the landing burn.
+        if let Some(fix) = sensors.deck {
+            self.deck
+                .get_or_insert_with(DeckPredictor::default)
+                .report(self.t - DECK_DELAY, &fix);
+        }
+        if let Some(deck) = &mut self.deck {
+            if self.phase == Phase::LandingBurn {
+                deck.update(self.t);
+            }
+            if let Some(now) = deck.at(self.t) {
+                self.pad = now.pos;
+            }
         }
         self.model_actuators(sensors.dt);
         self.t += sensors.dt;
@@ -341,7 +378,12 @@ impl FlightComputer {
                 } else if est.pos.z < ENTRY_BURN_START_ALTITUDE && est.vel.z < 0.0 {
                     self.phase = Phase::AeroDescent;
                 }
-                Intent::unpowered(retrograde)
+                // Hold the attitude the entry burn will need (retrograde to the velocity at
+                // its altitude on this ballistic arc) rather than chase the turning
+                // velocity over the top, which would spend the cold gas.
+                let drop = (est.pos.z - ENTRY_BURN_START_ALTITUDE).max(0.0);
+                let entry_sink = (est.vel.z.powi(2) + 2.0 * gravity(est.pos.z) * drop).sqrt();
+                Intent::unpowered(guidance::retrograde(est.vel.truncate().extend(-entry_sink)))
             }
             Phase::EntryBurn => {
                 self.predict(est, EntryBurn::Burning, false);
@@ -403,7 +445,9 @@ impl FlightComputer {
 
     fn landing(&mut self, est: &NavState, leg_contact: bool) -> Intent {
         let height = est.pos.z - self.pad.z - self.vehicle.standing_height(self.mass);
-        let climbing_back = height < CLIMB_CUTOFF_HEIGHT && est.vel.z > 0.0;
+        let deck_now = self.deck.as_ref().and_then(|d| d.at(self.t));
+        let closing = est.vel.z - deck_now.map_or(0.0, |d| d.vel_z);
+        let climbing_back = height < CLIMB_CUTOFF_HEIGHT && closing > 0.0;
         if leg_contact || height < TERMINAL_CUTOFF_HEIGHT || climbing_back {
             self.phase = Phase::Landed;
             return Intent::unpowered(est.att * DVec3::Z);
@@ -446,13 +490,25 @@ impl FlightComputer {
         // Near the ground terminal guidance plans the sideways motion, aiming above all for
         // an upright touchdown without sideways speed. Higher up, fly the plan, leaning off
         // the flow line as the aerodynamics allow.
-        // On a heaving deck, the last meters follow the deck rather than the plan, so the
-        // legs meet it gently whichever way it is moving.
-        let vertical = match self.deck_vel {
-            Some(deck_vel) if height < DECK_MATCH_HEIGHT => {
-                let sink = (DECK_TOUCHDOWN_SPEED.powi(2) + 2.0 * DECK_MATCH_DECEL * height).sqrt();
-                let closing = est.vel.z - deck_vel.z;
-                gravity(est.pos.z) + DECK_MATCH_DECEL + DECK_MATCH_GAIN * (-sink - closing)
+        // Over a drone ship's deck, the last meters are flown relative to the deck, to
+        // touch down at a moment when it is level and not rising.
+        let vertical = match deck_now {
+            Some(deck) if height < CALM_HEIGHT => {
+                let touchdown = match self.touchdown_at {
+                    Some(t) => t,
+                    None => *self.touchdown_at.insert(self.calm_moment(height, -closing)),
+                };
+                let to_go = touchdown - self.t;
+                // Arrive at the deck at the chosen time and speed: the minimum-effort
+                // (zero-effort miss and velocity) law on height and speed above the deck.
+                let relative = if to_go > DECK_FINAL_TIME {
+                    let miss = -(height + closing * to_go);
+                    let speed_error = -DECK_TOUCHDOWN_SPEED - closing;
+                    6.0 * miss / to_go.powi(2) - 2.0 * speed_error / to_go
+                } else {
+                    DECK_MATCH_GAIN * (-DECK_TOUCHDOWN_SPEED - closing)
+                };
+                gravity(est.pos.z) + deck.accel_z + relative
             }
             _ => accel.z,
         };
@@ -475,6 +531,45 @@ impl FlightComputer {
         }
     }
 
+    /// When to touch down on the deck, `height` above it and closing at `speed`: the
+    /// calmest predicted moment (deck level and not rising) among the times the approach
+    /// can be flown. Flown by the minimum-effort law, the acceleration relative to the deck
+    /// changes linearly from start to touchdown; both ends must stay within what the
+    /// engine can do, which rules out dawdling (at minimum throttle a light booster still
+    /// slows) as well as rushing.
+    fn calm_moment(&self, height: f64, speed: f64) -> f64 {
+        let v = &self.vehicle;
+        let thrust = v.engine_thrust(pressure(0.0)) / self.mass;
+        let (low, high) = (
+            v.min_throttle * thrust - gravity(0.0) + CALM_ACCEL_MARGIN,
+            PLAN_THROTTLE * thrust - gravity(0.0) - CALM_ACCEL_MARGIN,
+        );
+        let feasible = |time: f64| {
+            // Upward relative acceleration at the start and at touchdown.
+            let excess = (speed + DECK_TOUCHDOWN_SPEED) * time / 2.0 - height;
+            let jerk = -12.0 * excess / time.powi(3);
+            let start = (speed - DECK_TOUCHDOWN_SPEED) / time - jerk * time / 2.0;
+            let end = start + jerk * time;
+            (low..=high).contains(&start) && (low..=high).contains(&end)
+        };
+        let badness = |t: f64| {
+            self.deck
+                .as_ref()
+                .and_then(|d| d.at(t))
+                .map_or(0.0, |d: DeckState| {
+                    d.tilt.length_squared() / CALM_TILT.powi(2)
+                        + d.vel_z.max(0.0).powi(2) / CALM_RISE.powi(2)
+                })
+        };
+        let steady = 2.0 * height / (speed.max(DECK_TOUCHDOWN_SPEED) + DECK_TOUCHDOWN_SPEED);
+        (1..=CALM_CANDIDATES)
+            .map(|i| steady * 3.0 * i as f64 / CALM_CANDIDATES as f64)
+            .filter(|&time| feasible(time))
+            .map(|time| self.t + time)
+            .min_by(|&a, &b| badness(a).total_cmp(&badness(b)))
+            .unwrap_or(self.t + steady)
+    }
+
     /// Sideways thrust acceleration from terminal guidance, given the vertical thrust
     /// acceleration and the height above touchdown.
     fn terminal_accel(&self, est: &NavState, vertical: f64, height: f64) -> Option<DVec2> {
@@ -484,13 +579,27 @@ impl FlightComputer {
         let lag = control::actuator_lag(v, &eff, inertia);
         let gains = control::attitude_gains(authority.x, lag.x);
         // Braking at a steady rate to touchdown takes twice as long as coasting the
-        // height at the current speed.
-        let time_to_go = 2.0 * height / est.vel.z.abs().max(1.0);
+        // height at the current speed; over a deck, the touchdown may be timed.
+        let time_to_go = match self.touchdown_at {
+            Some(t) if height < CALM_HEIGHT => (t - self.t).max(0.1),
+            _ => 2.0 * height / est.vel.z.abs().max(1.0),
+        };
+        // Land square to the deck: arrive tilted as it will be.
+        let final_tilt = self
+            .deck
+            .as_ref()
+            .and_then(|d| d.at(self.t + time_to_go))
+            .map_or(DVec2::ZERO, |d| d.tilt);
         let accel = vertical.max(1.0);
+        let wind = est.local_wind();
+        let air_speed = (est.vel - wind).length();
+        let q = 0.5 * density(est.pos.z) * air_speed * air_speed;
         let model = terminal::Model {
             accel,
             kp: gains.kp,
             kd: gains.kd,
+            aero: q * v.ref_area() * v.normal_coeff_slope / self.mass,
+            air_speed,
             time_to_go,
         };
         let n = terminal::steps(time_to_go);
@@ -500,18 +609,20 @@ impl FlightComputer {
         let nose = est.att * DVec3::Z;
         // Rotating about world +y tilts the nose toward +x; about +x, toward -y.
         let rate = est.att * est.omega;
-        let axis = |offset: f64, velocity: f64, lean: f64, tilt_rate: f64| terminal::Axis {
-            position: offset,
-            velocity,
-            tilt: lean.atan2(nose.z),
-            tilt_rate,
-        };
+        let axis =
+            |offset: f64, velocity: f64, lean: f64, tilt_rate: f64, wind: f64| terminal::Axis {
+                position: offset,
+                velocity,
+                tilt: lean.atan2(nose.z),
+                tilt_rate,
+                wind,
+            };
         let offset = est.pos - self.pad;
-        let x = axis(offset.x, est.vel.x, nose.x, rate.y);
-        let y = axis(offset.y, est.vel.y, nose.y, -rate.x);
+        let x = axis(offset.x, est.vel.x, nose.x, rate.y, wind.x);
+        let y = axis(offset.y, est.vel.y, nose.y, -rate.x, wind.y);
         let tilt = DVec2::new(
-            terminal::tilt_command(x, &model, &limits)?,
-            terminal::tilt_command(y, &model, &limits)?,
+            terminal::tilt_command(x, &model, &limits, final_tilt.x)?,
+            terminal::tilt_command(y, &model, &limits, final_tilt.y)?,
         );
         Some(DVec2::new(tilt.x.tan(), tilt.y.tan()) * accel)
     }
@@ -526,6 +637,7 @@ impl FlightComputer {
             thrust,
             fin_gain: self.fin_gain(q),
             com_height: v.com_height(self.mass),
+            cold_gas: self.rcs_gas > 0.0,
         };
         (eff, v.inertia(self.mass))
     }
@@ -569,6 +681,11 @@ impl FlightComputer {
             control::authority(v, &eff, inertia),
             lag,
             self.delivered,
+            match self.phase {
+                Phase::Flip => FLIP_TURN_RATE,
+                Phase::Coast => COAST_TURN_RATE,
+                _ => f64::INFINITY,
+            },
         );
         // The actuators close on the new command over the next tick.
         self.delivered += (accel - self.delivered) * (DVec3::ONE - (-CONTROL_PERIOD / lag).exp());
@@ -580,7 +697,15 @@ impl FlightComputer {
         let thrust_torque = offset.cross(DVec3::Z * eff.thrust);
         let torque =
             inertia * accel + est.omega.cross(inertia * est.omega) - aero_torque - thrust_torque;
-        let alloc = control::allocate(v, &eff, torque);
+        let mut alloc = control::allocate(v, &eff, torque);
+        // Nothing pushes the booster around above the air, so on the way over the top let
+        // the attitude drift within a deadband rather than spend cold gas holding it.
+        let drifting = est.att * DVec3::Z;
+        let within_band = drifting.angle_between(intent.axis) < COAST_DEADBAND
+            && est.omega.length() < COAST_DEADBAND_RATE;
+        if self.phase == Phase::Coast && within_band {
+            alloc.rcs = DVec3::ZERO;
+        }
 
         Commands {
             engines: intent.engines,

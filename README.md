@@ -9,6 +9,9 @@ export.
 
 ![Landing at golden hour, cut between the onboard and pad cameras](docs/landing.gif)
 
+**[How the booster lands](docs/how-it-works.md)**, a tour of the flight software with
+figures · **[Drone-ship landing with sound](docs/drone-ship.mp4)** (48 s video)
+
 ## What it does
 
 - **Physics** (`crates/sim`): a 40 m booster with engines, gimbal, grid fins, cold-gas
@@ -16,17 +19,20 @@ export.
   the 1976 US Standard Atmosphere, wind with shear and gusts, base-first aerodynamics with
   transonic drag rise, contact with the ground or a heaving drone ship, and
   IMU/GPS/altimeter/star-tracker sensors.
-  Monte Carlo dispersions randomize the vehicle and the weather; a stress level adds harsher
-  weather and faults: an engine failure in the entry burn, GPS outages, accelerometer
-  bias jumps and a sluggish throttle.
+  Cold-gas thrusters run from a finite tank. Monte Carlo dispersions randomize the vehicle
+  and the weather; a stress level adds harsher weather and faults: an engine failure in
+  the entry burn, GPS outages, accelerometer bias jumps and a sluggish throttle.
+  The drone ship reports its deck late and with noise.
 - **Flight software** (`crates/fsw`), which never sees the true state:
   - Navigation: an 11-state Kalman filter (position, velocity, accelerometer bias and the
-    wind aloft), with the wind read from the side force the body feels.
+    wind aloft), with the wind read from the side force the body feels, and a
+    multiplicative Kalman filter for attitude that learns the gyro bias.
   - Guidance: boostback and entry burns aimed by a landing-point predictor, aerodynamic
     steering on the way down, then a G-FOLD landing burn re-planned every half second with
-    Clarabel. Over the last 200 m a model-predictive controller plans the tilt for an
-    upright touchdown without sideways speed, and at sea the final meters follow the
-    deck's heave.
+    Clarabel. Over the last 700 m a model-predictive controller (which knows the attitude
+    lags and the air pushes back) plans the tilt for an upright touchdown without sideways
+    speed. At sea, the deck's swell is fitted from its reports and the touchdown is timed
+    for a moment when the deck is level and not rising.
   - Control: a discrete LQR per axis that models how the gimbal and fins lag their
     commands, allocated across the gimbal, grid fins and thrusters.
 - **Mission** (`crates/mission`): the closed loop, flight logs, landing judgement, and the
@@ -42,9 +48,9 @@ Monte Carlo with randomized vehicle, wind and starting state (`lander mc`, 300 r
 
 | Scenario | Landed | Miss (mean / p95) |
 |---|---|---|
-| Landing (from 5 km) | 100% | 1.9 / 5.5 m |
-| Full return (from stage separation at 70 km) | 100% | 2.0 / 5.3 m |
-| Drone ship (140 km downrange, in a swell) | 99.7% | 1.0 / 2.8 m |
+| Landing (from 5 km) | 100% | 1.6 / 5.0 m |
+| Full return (from stage separation at 70 km) | 100% | 1.9 / 5.9 m |
+| Drone ship (140 km downrange, in a swell) | 100% | 1.0 / 2.2 m |
 
 And as conditions get harsher (`lander sweep`, 200 runs per level; at stress 1 about one
 flight in two meets an engine failure, a GPS outage or a sensor fault, and the sea runs
@@ -52,9 +58,9 @@ twice as high):
 
 | Stress | 0 | 0.5 | 1 | 1.5 | 2 |
 |---|---|---|---|---|---|
-| Landing | 100% | 100% | 97.5% | 88.5% | 70.0% |
-| Full return | 100% | 99.5% | 98.0% | 90.0% | 73.5% |
-| Drone ship | 99.5% | 97.0% | 97.0% | 88.0% | 48.5% |
+| Landing | 100% | 100% | 98.0% | 93.5% | 76.5% |
+| Full return | 100% | 99.0% | 98.5% | 94.0% | 79.0% |
+| Drone ship | 100% | 98.5% | 99.0% | 87.0% | 56.0% |
 
 ![Drone ship landing at sunset](docs/drone-ship.jpg)
 
@@ -67,6 +73,7 @@ cargo run --release -p mission --bin lander -- mc landing --runs 300
 cargo run --release -p mission --bin lander -- sweep full --runs 200
 cargo run --release -p mission --bin lander -- mc ship --runs 100        # drone ship
 cargo run --release -p app -- --record out.mp4 landing --camera auto --hour 20   # video (needs ffmpeg)
+python docs/plots.py                                            # figures for docs/how-it-works.md
 cargo test --workspace
 ```
 

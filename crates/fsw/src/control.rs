@@ -151,6 +151,8 @@ pub struct Effectors {
     pub fin_gain: f64,
     /// Height of the center of mass above the base, which sets the gimbal and fin levers.
     pub com_height: f64,
+    /// Whether the cold-gas thrusters have gas left.
+    pub cold_gas: bool,
 }
 
 /// Maximum angular acceleration each effector gives about each body axis.
@@ -172,7 +174,11 @@ fn authorities(vehicle: &Vehicle, eff: &Effectors, inertia: DVec3) -> Authoritie
     Authorities {
         gimbal: DVec3::new(gimbal, gimbal, 0.0) / inertia,
         fins: DVec3::new(fins, fins, fin_roll) / inertia,
-        rcs: vehicle.rcs_torque / inertia,
+        rcs: if eff.cold_gas {
+            vehicle.rcs_torque / inertia
+        } else {
+            DVec3::ZERO
+        },
     }
 }
 
@@ -189,13 +195,13 @@ pub fn actuator_lag(vehicle: &Vehicle, eff: &Effectors, inertia: DVec3) -> DVec3
     let a = authorities(vehicle, eff, inertia);
     let gimbal_lag = 0.5 * vehicle.gimbal_max / vehicle.gimbal_rate;
     let fin_lag = 0.5 * vehicle.fin_max / vehicle.fin_rate;
-    (a.gimbal * gimbal_lag + a.fins * fin_lag) / (a.gimbal + a.fins + a.rcs)
-        + DVec3::splat(0.5 * CONTROL_PERIOD)
+    let total = (a.gimbal + a.fins + a.rcs).max(DVec3::splat(1e-9));
+    (a.gimbal * gimbal_lag + a.fins * fin_lag) / total + DVec3::splat(0.5 * CONTROL_PERIOD)
 }
 
-/// Body angular acceleration that turns the nose toward `axis_cmd` (world frame) and
-/// damps all rates, given what the actuators are still delivering from earlier commands.
-/// Roll is only damped.
+/// Body angular acceleration that turns the nose toward `axis_cmd` (world frame), no
+/// faster than `max_rate` (rad/s), and damps all rates, given what the actuators are still
+/// delivering from earlier commands. Roll is only damped.
 pub fn attitude_accel(
     att: DQuat,
     omega: DVec3,
@@ -203,6 +209,7 @@ pub fn attitude_accel(
     authority: DVec3,
     lag: DVec3,
     delivered: DVec3,
+    max_rate: f64,
 ) -> DVec3 {
     let turn = DQuat::from_rotation_arc(att * DVec3::Z, axis_cmd.normalize());
     let mut error = att.inverse() * turn * att;
@@ -214,7 +221,7 @@ pub fn attitude_accel(
         let g = attitude_gains(max, lag);
         // Cascaded form of the law, with the rate request capped so the axis can always
         // brake in time when the error is large.
-        let cap = (max * e.abs()).sqrt();
+        let cap = (max * e.abs()).sqrt().min(max_rate);
         let rate_cmd = (g.kp / g.kd * e).clamp(-cap, cap);
         (g.kd * (rate_cmd - w) - g.ka * a).clamp(-max, max)
     };
@@ -261,7 +268,11 @@ pub fn allocate(vehicle: &Vehicle, eff: &Effectors, torque: DVec3) -> Allocation
         );
     }
 
-    let rcs = remaining.clamp(-vehicle.rcs_torque, vehicle.rcs_torque);
+    let rcs = if eff.cold_gas {
+        remaining.clamp(-vehicle.rcs_torque, vehicle.rcs_torque)
+    } else {
+        DVec3::ZERO
+    };
     Allocation { gimbal, fins, rcs }
 }
 
@@ -287,6 +298,7 @@ mod tests {
             thrust: 800e3,
             fin_gain: 40e3,
             com_height: 14.0,
+            cold_gas: true,
         };
         let torque = DVec3::new(300e3, -500e3, 10e3);
         let a = allocate(&v, &eff, torque);
@@ -359,6 +371,7 @@ mod tests {
             DVec3::splat(0.1),
             DVec3::splat(0.1),
             DVec3::ZERO,
+            f64::INFINITY,
         );
         // Rotating +z toward +x is a positive rotation about +y.
         assert!(accel.y > 0.0 && accel.x.abs() < 1e-9);

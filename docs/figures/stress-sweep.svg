@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 320" class="root" role="img">
+<title>Landing rate as conditions get harsher</title><style>
+.root { --surface: #fcfcfb; --text: #0b0b0b; --text-2: #52514e; --muted: #898781;
+        --grid: #e1e0d9; --axis: #c3c2b7; --band: #f1f0ec; --s0: #2a78d6; --s1: #eb6834; --s2: #1baf7a; }
+@media (prefers-color-scheme: dark) {
+  .root { --surface: #1a1a19; --text: #f0efec; --text-2: #c3c2b7; --muted: #898781;
+          --grid: #2c2c2a; --axis: #383835; --band: #232322; --s0: #3987e5; --s1: #d95926; --s2: #199e70; }
+}
+text { font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; }
+</style>
+<rect width="720" height="320" rx="8" fill="var(--surface)"/>
+<text x="56" y="26" font-size="15" font-weight="600" fill="var(--text)">Landing rate as conditions get harsher</text>
+<line x1="56" x2="600" y1="276.0" y2="276.0" stroke="var(--grid)" stroke-width="1"/>
+<text x="48" y="280.0" font-size="11" text-anchor="end" fill="var(--muted)">0</text>
+<line x1="56" x2="600" y1="230.4" y2="230.4" stroke="var(--grid)" stroke-width="1"/>
+<text x="48" y="234.4" font-size="11" text-anchor="end" fill="var(--muted)">20</text>
+<line x1="56" x2="600" y1="184.8" y2="184.8" stroke="var(--grid)" stroke-width="1"/>
+<text x="48" y="188.8" font-size="11" text-anchor="end" fill="var(--muted)">40</text>
+<line x1="56" x2="600" y1="139.2" y2="139.2" stroke="var(--grid)" stroke-width="1"/>
+<text x="48" y="143.2" font-size="11" text-anchor="end" fill="var(--muted)">60</text>
+<line x1="56" x2="600" y1="93.6" y2="93.6" stroke="var(--grid)" stroke-width="1"/>
+<text x="48" y="97.6" font-size="11" text-anchor="end" fill="var(--muted)">80</text>
+<line x1="56" x2="600" y1="48.0" y2="48.0" stroke="var(--grid)" stroke-width="1"/>
+<text x="48" y="52.0" font-size="11" text-anchor="end" fill="var(--muted)">100</text>
+<text x="56.0" y="294" font-size="11" text-anchor="middle" fill="var(--muted)">0</text>
+<text x="124.0" y="294" font-size="11" text-anchor="middle" fill="var(--muted)">0.25</text>
+<text x="192.0" y="294" font-size="11" text-anchor="middle" fill="var(--muted)">0.5</text>
+<text x="260.0" y="294" font-size="11" text-anchor="middle" fill="var(--muted)">0.75</text>
+<text x="328.0" y="294" font-size="11" text-anchor="middle" fill="var(--muted)">1</text>
+<text x="396.0" y="294" font-size="11" text-anchor="middle" fill="var(--muted)">1.25</text>
+<text x="464.0" y="294" font-size="11" text-anchor="middle" fill="var(--muted)">1.5</text>
+<text x="532.0" y="294" font-size="11" text-anchor="middle" fill="var(--muted)">1.75</text>
+<text x="600.0" y="294" font-size="11" text-anchor="middle" fill="var(--muted)">2</text>
+<line x1="56" x2="600" y1="276" y2="276" stroke="var(--axis)" stroke-width="1"/>
+<text x="328.0" y="312" font-size="11" text-anchor="middle" fill="var(--text-2)">stress level</text>
+<text x="14" y="162.0" font-size="11" text-anchor="middle" fill="var(--text-2)" transform="rotate(-90 14 162.0)">landed (%)</text>
+<polyline points="56.0,48.0 192.0,48.0 328.0,52.6 464.0,62.8 600.0,101.6" fill="none" stroke="var(--s0)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="600.0" cy="101.6" r="4" fill="var(--s0)" stroke="var(--surface)" stroke-width="2"/>
+<text x="610" y="119.6" font-size="12" fill="var(--text)"><tspan fill="var(--s0)">●</tspan> Landing</text>
+<polyline points="56.0,48.0 192.0,50.3 328.0,51.4 464.0,61.7 600.0,95.9" fill="none" stroke="var(--s1)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="600.0" cy="95.9" r="4" fill="var(--s1)" stroke="var(--surface)" stroke-width="2"/>
+<text x="610" y="99.9" font-size="12" fill="var(--text)"><tspan fill="var(--s1)">●</tspan> Full return</text>
+<polyline points="56.0,48.0 192.0,51.4 328.0,50.3 464.0,77.6 600.0,148.3" fill="none" stroke="var(--s2)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="600.0" cy="148.3" r="4" fill="var(--s2)" stroke="var(--surface)" stroke-width="2"/>
+<text x="610" y="152.3" font-size="12" fill="var(--text)"><tspan fill="var(--s2)">●</tspan> Drone ship</text>
+</svg>

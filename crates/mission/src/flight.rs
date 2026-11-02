@@ -108,6 +108,7 @@ pub struct Flight {
     engine_out_announced: bool,
     gps_out: bool,
     bias_jump_announced: bool,
+    gas_out_announced: bool,
     touchdown: Option<Touchdown>,
 }
 
@@ -173,6 +174,7 @@ impl Flight {
             engine_out_announced: false,
             gps_out: false,
             bias_jump_announced: false,
+            gas_out_announced: false,
             touchdown: None,
         };
         flight.event(format!("Start: {}", start.phase.label()));
@@ -258,6 +260,7 @@ impl Flight {
             } else {
                 glam::Vec3::ZERO
             },
+            rcs_gas: self.world.rcs_gas as f32,
         });
     }
 
@@ -294,6 +297,10 @@ impl Flight {
             let text = if self.gps_out { "GPS lost" } else { "GPS back" };
             self.event(text.into());
         }
+        if !self.gas_out_announced && self.world.rcs_gas <= 0.0 {
+            self.gas_out_announced = true;
+            self.event("Cold gas out".into());
+        }
         if !self.bias_jump_announced && self.world.sensors().bias_jumped {
             self.bias_jump_announced = true;
             self.event("Accelerometer bias jump".into());
@@ -304,18 +311,24 @@ impl Flight {
         let (s, info) = (self.world.state, self.world.info);
         let touching = info.legs_touching > 0 || info.hull_touching > 0;
         if self.touchdown.is_none() && touching {
-            // On the drone ship, position and speeds count relative to the deck.
-            let (center, deck_vel) = self.world.ship.map_or((DVec3::ZERO, DVec3::ZERO), |ship| {
-                let pose = ship.pose(self.world.t);
-                (pose.origin, pose.velocity_at(s.pos))
-            });
+            // On the drone ship, position, speeds and tilt count relative to the deck: its
+            // surface under the booster, and its normal.
+            let (center, deck_vel, up) =
+                self.world
+                    .ship
+                    .map_or((DVec3::ZERO, DVec3::ZERO, DVec3::Z), |ship| {
+                        let pose = ship.pose(self.world.t);
+                        let local = pose.att.inverse() * (s.pos - pose.origin);
+                        let below = pose.origin + pose.att * local.truncate().extend(0.0);
+                        (pose.origin, pose.velocity_at(below), pose.att * DVec3::Z)
+                    });
             let relative = s.vel - deck_vel;
             let td = Touchdown {
                 t: self.world.t,
                 position: (s.pos - center).truncate(),
-                vertical_speed: -relative.z,
-                horizontal_speed: relative.truncate().length(),
-                tilt_deg: s.tilt().to_degrees(),
+                vertical_speed: -relative.dot(up),
+                horizontal_speed: (relative - up * relative.dot(up)).length(),
+                tilt_deg: s.axis().angle_between(up).to_degrees(),
                 tilt_rate_deg: s.omega.truncate().length().to_degrees(),
                 propellant: s.mass - self.world.vehicle.dry_mass,
             };

@@ -13,6 +13,10 @@ runner, and a Bevy mission-control viewer with live telemetry and replay.
 | `crates/mission` | Closed loop (`Flight`), flight log, landing judgement, Monte Carlo, `lander` CLI | `sim`, `fsw` |
 | `crates/app` | Bevy viewer: 3D scene, gizmo overlays, egui telemetry panels, replay, Monte Carlo window, sound, video export. `blender/booster.py` generates the embedded booster model | all of the above |
 
+`docs/` holds the README media (`landing.gif`, `drone-ship.jpg`, `drone-ship.mp4`), the
+write-up `how-it-works.md`, and `plots.py`, which draws its figures as standalone SVGs
+(standard-library Python; light and dark color schemes).
+
 Key libraries: `glam` 0.33 (f64 math in sim/fsw, f32 in logs and Bevy), `nalgebra` (Kalman
 filter matrices), `clarabel` (conic solver for G-FOLD), `rayon` (Monte Carlo), Bevy 0.20,
 `bevy_egui` 0.43 and `egui_plot` 0.37 (egui 0.36).
@@ -30,6 +34,7 @@ cargo run --release -p mission --bin lander -- mc ship --runs 100       # drone 
 cargo run --release -p app -- --record out.mp4 landing --camera auto --hour 20   # video (needs ffmpeg)
 cargo test --workspace
 blender -b --factory-startup --python crates/app/blender/booster.py   # regenerate the booster model
+python docs/plots.py      # regenerate docs/figures (flights and sweeps; needs the release lander)
 ```
 
 `[profile.dev]` uses `opt-level = 1` for workspace crates and `3` for dependencies; debug
@@ -76,8 +81,9 @@ Falcon-like first stage: dry mass 25.6 t, length 40 m, radius 1.85 m, center of 
 - **Grid fins:** at 38 m; deploy over 2 s. ±20°, slew 40°/s. Modeled as ideal lateral-force
   generators (`q × 4 m² × 2/rad × deflection`) plus a roll moment. Effective only once
   fully deployed.
-- **RCS:** cold-gas torque of up to 150 kN·m about pitch/yaw and 30 kN·m about roll.
-  Pure couple, no propellant.
+- **RCS:** cold-gas torque of up to 150 kN·m about pitch/yaw and 30 kN·m about roll, as a
+  pure couple. It spends gas: `|τ| / lever` of thrust per axis (levers 18, 18, 2 m) at
+  Isp 70 s, from a 500 kg tank (`World::rcs_gas`). Empty, the thrusters fall silent.
 - **Legs:** 4 feet at 9 m radius, 1.5 m below the base when deployed; deploy over 2 s.
   `standing_height(mass)` = `com_height(mass)` + 1.5 m is the CoM height when standing
   (16.8 m empty, before the shock absorbers give).
@@ -136,7 +142,8 @@ thrust misalignment (from the dispersions) is added to the gimbal.
 | Star tracker | Attitude, σ 5e-4 rad per axis | 10 Hz |
 | Leg contact | Any foot touching | 50 Hz |
 | Engine health | `engine_out` once an engine has failed | 50 Hz |
-| Deck telemetry | The drone ship's deck center position and velocity, exact | 50 Hz |
+| Deck telemetry | The drone ship's deck center position, velocity and attitude as they were 0.2 s earlier; σ 0.1 m, 0.05 m/s, 0.002 rad | 10 Hz |
+| Cold-gas tank | Gas left (kg) | 50 Hz |
 
 Faults (stress only): GPS goes silent for a while once the vehicle descends through a set
 altitude, and the accelerometer bias jumps once it descends through another.
@@ -170,8 +177,11 @@ navigation, guidance (phase state machine), then attitude control and allocation
 
 ### Navigation (`nav.rs`)
 
-- **Attitude:** integrate the gyro, then blend in each star-tracker fix with gain 0.05
-  (a complementary filter).
+- **Attitude** (`attitude.rs`): a multiplicative extended Kalman filter. The bias-corrected
+  gyro carries the quaternion forward; the filter state is the small body-frame attitude
+  error and the gyro bias (6 states). Each star-tracker fix corrects both, so the filter
+  learns the gyro bias (Joseph-form update). Process noise: the gyro noise per tick and a
+  bias drift of 1e-6 rad/s per √s.
 - **Translation and wind:** an 11-state Kalman filter over position, velocity,
   accelerometer bias, and the horizontal wind at the 10 km reference altitude.
   - Prediction: IMU specific force rotated by the attitude estimate, plus gravity. The wind
@@ -215,9 +225,9 @@ dead-reckon propellant, and the modeled positions to read the side force.
 
 | Phase | Engines | Attitude target | Exit |
 |---|---|---|---|
-| Flip | off | horizontal heading from the predicted landing point toward the pad | aligned within 5° and rates < 1°/s |
+| Flip | off | horizontal heading from the predicted landing point toward the pad, turning at ≤ 5°/s | aligned within 5° and rates < 1°/s |
 | Boostback | 3 at full, then 1 at minimum throttle once the predicted miss is < 3 km | same heading | miss < 50 m or the predicted point passes the pad; fins deploy |
-| Coast | off | retrograde (engines into the flow) | below 45 km and descending: EntryBurn if speed > 450 m/s, otherwise AeroDescent |
+| Coast | off | retrograde to the velocity this ballistic arc will have at 45 km, turning at ≤ 1.5°/s, inside a 5° deadband (no cold gas while within 5° and turning < 0.5°/s) | below 45 km and descending: EntryBurn if speed > 450 m/s, otherwise AeroDescent |
 | EntryBurn | 3 at full | retrograde | speed < 450 m/s |
 | AeroDescent | off | retrograde leaned for body lift (see below) | below the ignition altitude with a feasible G-FOLD plan, looked for every 0.2 s (or forced at 80% of it) |
 | LandingBurn | 1 | from the shaped thrust command | leg contact, or the engine cuts 0.5 m above leg-contact height (one engine at minimum throttle would otherwise hover a near-empty booster), or within 5 m of it if the booster starts climbing again; legs deploy below 500 m |
@@ -272,27 +282,50 @@ dead-reckon propellant, and the modeled positions to read the side force.
   - It delivers the sideways part by leaning. While thrust dominates (`T > c1 q S`) it leans
     toward the target, up to where net force peaks. While body lift dominates it leans
     away, up to 15°.
-  - Below 200 m above touchdown, terminal guidance takes over the sideways motion (see
+  - Below 700 m above touchdown, terminal guidance takes over the sideways motion (see
     below); the vertical keeps following the plan.
-  - On a drone ship, below 15 m above the deck the vertical command follows the deck
-    instead: a sink rate relative to it of `sqrt(1.5² + 2·2·h)` m/s, tracked at 2 /s on
-    top of gravity plus 2 m/s², so the legs meet a heaving deck gently.
+  - On a drone ship, below 40 m above the deck the vertical is timed to the deck (see
+    below).
   - A final tilt cone narrows from 25° at 80 m above touchdown to 3° at touchdown.
 - **Terminal guidance** (`terminal.rs`): model-predictive control of the sideways motion.
   - Each horizontal axis on its own: position, velocity, tilt and tilt rate, with
-    `v' = a·tilt` (a = the vertical thrust acceleration) and the closed attitude loop
-    `tilt'' = kp (u − tilt) − kd tilt'` (kp, kd from `control::attitude_gains` at the current
-    authority and lag). Zero-order hold at 0.1 s.
-  - Horizon: the time to go at a steady braking rate (2h/|v_z|), 5–80 steps. The tilt
+    `v' = (a − k)·tilt − (k/V)(v − w)`: a = the vertical thrust acceleration, and
+    k = q S C_N′ / m the body's normal force per radian of angle of attack, falling at air
+    speed V through wind w. The closed attitude loop is `tilt'' = kp (u − tilt) − kd tilt'`
+    (kp, kd from `control::attitude_gains` at the current authority and lag). Zero-order
+    hold with the wind as a constant input.
+  - Horizon: the time to go at a steady braking rate (2h/|v_z|), or until the timed
+    touchdown on a deck; 5–80 steps of at least 0.1 s, stretched to cover it. The tilt
     command at each step is boxed by the tilt limit at that step's expected height.
   - Cost (Bryson scales): running position 4 m and velocity 3 m/s per second; at
-    touchdown position 2 m, velocity 0.2 m/s, tilt 0.01 rad and tilt rate 0.05 rad/s;
-    tilt command 0.3 rad per second and 0.03 rad change per step.
+    touchdown position 2 m, velocity 0.2 m/s, tilt 0.01 rad from the target and tilt rate
+    0.05 rad/s; tilt command 0.3 rad per second and changing at 0.3 rad/s. The target tilt
+    is upright, or the deck's predicted tilt at touchdown, to land square to it.
   - States are eliminated (a condensed QP in the commands only) and Clarabel solves it
     every tick; the first command becomes the sideways thrust acceleration `a·tan(u)`. If
     it fails, the sideways velocity is just damped at 0.8 /s.
-  - It replaced a velocity-only rule below 40 m. Starting it higher (400 m) did worse:
-    its model has no aerodynamics.
+  - Takeover height: with its aerodynamic model, starting at 700 m did best (400 m and
+    200 m slightly worse, 1200 m worse at stress 0). Without it, anything above 200 m
+    did worse.
+- **Deck prediction** (`deck.rs`): each deck report (stamped 0.2 s back for its latency)
+  goes into a 40 s window. During the landing burn, once 20 s of reports are in, heave,
+  pitch and roll are each fitted every second with a sinusoid (offset + sine + cosine by
+  least squares, with the period searched over 4–16 s on a grid and refined by golden
+  section). The fits give the deck's position, vertical velocity and acceleration, and
+  tilt at any time; the landing target follows the predicted deck.
+- **Timed touchdown at sea:** below 40 m above the deck, the flight computer picks a
+  touchdown time once.
+  - Candidates run up to three times a steady approach (2h / (closing speed + 1.5 m/s)).
+    Flown by the minimum-effort law, the acceleration relative to the deck changes
+    linearly; a candidate is kept only if both ends stay 1 m/s² inside what one engine can
+    do between minimum throttle and 85%. (At minimum throttle a light booster still
+    slows, so it cannot dawdle.)
+  - Among those, it takes the calmest predicted moment: deck tilt (scale 0.02 rad) plus
+    the deck rising (scale 0.3 m/s).
+  - It then flies height and speed relative to the deck with the zero-effort-miss and
+    zero-effort-velocity law `a = 6·ZEM/τ² − 2·ZEV/τ` to arrive at 1.5 m/s, plus gravity
+    and the deck's predicted acceleration; in the last 0.3 s it just holds 1.5 m/s
+    relative to the deck (gain 2 /s).
 - **Fallback:** if no plan exists, brake to touchdown speed at touchdown height and damp drift over the pad.
 
 ### Control (`control.rs`)
@@ -328,15 +361,16 @@ dead-reckon propellant, and the modeled positions to read the side force.
   - Save and load as JSON.
   - `frames_around(t)` and `plan_at(t)` serve replay.
 - **Judgement:** the first ground contact records a `Touchdown` from truth. On the drone
-  ship, its position and speeds are relative to the deck.
+  ship, everything is relative to the deck: position from its center, speeds against
+  the deck surface under the booster, and tilt from the deck's normal.
   - Any hull contact is an immediate crash, and so is any point in the sea ("fell into
     the sea").
   - Otherwise the flight ends 5 s after touchdown and is graded against the limits:
     vertical ≤ 4 m/s, horizontal ≤ 2 m/s, tilt ≤ 5°, tilt rate ≤ 10°/s, within 15 m of the
     pad center. The first violated limit becomes the verdict.
   - Flights time out at 900 s.
-- **Fault events:** "Engine out", "GPS lost" / "GPS back", and "Accelerometer bias
-  jump" join the event log when they happen.
+- **Fault events:** "Engine out", "GPS lost" / "GPS back", "Accelerometer bias jump"
+  and "Cold gas out" join the event log when they happen.
 - **Scenarios:**
   - `Landing`: 5 km, falling at 230 m/s base-first, 270 m off the pad, 4.5 t of propellant,
     fins deployed, starting in AeroDescent.
@@ -493,7 +527,7 @@ dead-reckon propellant, and the modeled positions to read the side force.
   - Bottom: play/pause, speed, timeline slider, scenario/seed/dispersed/stress, Fly,
     Save/Load (`flights/*.json`), camera mode, overlay and sound toggles, time of day,
     Monte Carlo toggle, and a clickable event log.
-  - Plots include wind speed, truth vs. the flight computer's estimate.
+  - Plots include wind speed (truth vs. the flight computer's estimate) and cold gas.
   - The timeline slider only moves the cursor on a drag or click. Otherwise the slider's
     own value nudging would fight playback.
   - **Monte Carlo window:** runs a batch at the chosen stress on a background thread, then
@@ -512,8 +546,11 @@ dead-reckon propellant, and the modeled positions to read the side force.
 
 - **`sim`:** free fall, rocket equation, resting on legs, angular momentum conservation,
   IMU at rest, aero stability, Mach drag rise, the standard atmosphere against its
-  tables, engine out (two engines, off-center torque), wind veer, deck rates.
-- **`fsw`:** terminal MPC arrives slow and upright and respects its tilt limit,
+  tables, engine out (two engines, off-center torque), wind veer, deck rates, the
+  thrusters falling silent when the gas runs out.
+- **`fsw`:** terminal MPC arrives slow and upright, respects its tilt limit and leans
+  harder against the air, the deck predictor forecasts the swell 5 s ahead, the attitude
+  filter learns the gyro bias,
   LQR solves the Riccati equation, the lagged LQR reduces to it as the lag
   vanishes and settles a lagging axis, the gain table matches the LQR, allocation
   reproduces the requested torque, attitude command sign, Kalman filter convergence,
@@ -538,26 +575,27 @@ Reproduce with `lander mc <scenario> --runs N`. The nominal flights of all scena
 
 | Scenario | Dispersed runs | Landed | Miss (mean / p95) |
 |---|---|---|---|
-| Landing | 300 | 100% | 1.9 / 5.5 m |
-| Full return | 300 | 100% | 2.0 / 5.3 m |
-| Drone ship | 300 | 99.7% | 1.0 / 2.8 m |
+| Landing | 300 | 100% | 1.6 / 5.0 m |
+| Full return | 300 | 100% | 1.9 / 5.9 m |
+| Drone ship | 300 | 100% | 1.0 / 2.2 m |
 
 The wind estimate is off by about 1 m/s at landing-burn ignition (1.6 m/s at stress 1).
 Terminal guidance trades a few meters of miss (well inside the 15 m pad radius) for
-touchdowns without sideways speed.
+touchdowns without sideways speed. A full return spends about 220 kg of its 500 kg of cold
+gas, mostly on the flip.
 
 Under stress (`lander sweep`, 200 runs per level):
 
 | Stress | 0 | 0.5 | 1 | 1.5 | 2 |
 |---|---|---|---|---|---|
-| Landing | 100% | 100% | 97.5% | 88.5% | 70.0% |
-| Full return | 100% | 99.5% | 98.0% | 90.0% | 73.5% |
-| Drone ship | 99.5% | 97.0% | 97.0% | 88.0% | 48.5% |
+| Landing | 100% | 100% | 98.0% | 93.5% | 76.5% |
+| Full return | 100% | 99.0% | 98.5% | 94.0% | 79.0% |
+| Drone ship | 100% | 98.5% | 99.0% | 87.0% | 56.0% |
 
-- On land the failures are misses past 15 m: in strong wind the booster is still well off
-  the pad when terminal guidance takes over at 200 m.
-- At sea they are hard or sliding touchdowns on the heaving, rolling deck, which at
-  stress 2 swells three times as high as nominal.
+- On land the failures are mostly misses past 15 m in the strongest wind.
+- At sea, stress 2 stacks an engine failure, an accelerometer jump and a GPS outage during
+  the landing burn on a swell three times nominal; the failures are hard, sliding or off
+  the deck.
 
 ## Simplifications
 
@@ -565,11 +603,11 @@ Under stress (`lander sweep`, 200 runs per level):
 - Mach number only changes axial drag (not the normal force or fins).
 - No plume–aero interaction in the physics (the viewer only draws it).
 - The center of mass moves along the axis only; inertia is a cylinder scaled by mass.
-- The drone ship holds station exactly and moves in three pure sinusoids; its deck
-  telemetry is exact. The visual swell only resembles its motion.
+- The drone ship holds station exactly and moves in three pure sinusoids. The visual swell
+  only resembles its motion.
 - Fins are ideal force generators.
 - RCS is continuous torque with no propellant.
-- Attitude comes from a complementary filter rather than a full attitude EKF.
+- The cold-gas thrusters are a continuous torque, not pulsed jets.
 - The flight software assumes the nominal wind profile shape (no veer, exponent 0.2) and
   only estimates its strength and direction.
 - Engine health is reported perfectly and at once.

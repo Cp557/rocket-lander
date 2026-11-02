@@ -356,7 +356,7 @@ fn plots(ui: &mut Ui, playback: &Playback) {
     let dry = Vehicle::nominal().dry_mass;
     let propellant = |f: &Frame| f.mass as f64 - dry;
     let propellant_estimate = |f: &Frame| f.est_mass as f64 - dry;
-    let charts: [(&str, Vec<Series>); 10] = [
+    let charts: [(&str, Vec<Series>); 11] = [
         (
             "Altitude [m]",
             vec![
@@ -422,6 +422,10 @@ fn plots(ui: &mut Ui, playback: &Playback) {
                 }),
                 ("filter 1-sigma", ESTIMATE, &|f| f.pos_sigma as f64),
             ],
+        ),
+        (
+            "Cold gas [kg]",
+            vec![("left", TRUTH, &|f| f.rcs_gas as f64)],
         ),
         (
             "Propellant [kg]",

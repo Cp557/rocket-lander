@@ -21,6 +21,13 @@ pub const ALTIMETER_RANGE: f64 = 3000.0;
 pub const ALTIMETER_PERIOD: f64 = 0.05;
 pub const STAR_TRACKER_NOISE: f64 = 5e-4;
 pub const STAR_TRACKER_PERIOD: f64 = 0.1;
+/// Drone ship deck reports: rate, latency and noise (position m, velocity m/s, attitude
+/// rad per axis).
+pub const DECK_PERIOD: f64 = 0.1;
+pub const DECK_DELAY: f64 = 0.2;
+pub const DECK_POS_NOISE: f64 = 0.1;
+pub const DECK_VEL_NOISE: f64 = 0.05;
+pub const DECK_ATT_NOISE: f64 = 0.002;
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct GpsFix {
@@ -28,11 +35,13 @@ pub struct GpsFix {
     pub vel: DVec3,
 }
 
-/// The drone ship's report of where its deck center is and how it moves.
+/// The drone ship's report of where its deck center was `DECK_DELAY` ago, how it was
+/// moving, and how it was tilted.
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 pub struct DeckFix {
     pub pos: DVec3,
     pub vel: DVec3,
+    pub att: DQuat,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -53,6 +62,8 @@ pub struct SensorFrame {
     pub engine_out: bool,
     /// Deck telemetry from the drone ship, when landing on one.
     pub deck: Option<DeckFix>,
+    /// Cold gas left in the thruster tank (kg).
+    pub rcs_gas: f64,
 }
 
 pub struct Sensors {
@@ -72,7 +83,7 @@ pub struct Sensors {
     pub bias_jumped: bool,
 }
 
-fn noise3(rng: &mut StdRng, sigma: f64) -> DVec3 {
+pub(crate) fn noise3(rng: &mut StdRng, sigma: f64) -> DVec3 {
     DVec3::new(
         rng.sample(StandardNormal),
         rng.sample(StandardNormal),
@@ -163,12 +174,13 @@ impl Sensors {
             leg_contact,
             engine_out: false,
             deck: None,
+            rcs_gas: 0.0,
         }
     }
 }
 
 /// True when a periodic sensor is due at time `t`, scheduling its next sample.
-fn due(t: f64, next: &mut f64, period: f64) -> bool {
+pub(crate) fn due(t: f64, next: &mut f64, period: f64) -> bool {
     if t + 1e-9 < *next {
         return false;
     }
