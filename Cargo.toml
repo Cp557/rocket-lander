@@ -1,0 +1,26 @@
+[workspace]
+resolver = "3"
+members = ["crates/sim", "crates/fsw", "crates/mission", "crates/app"]
+
+[workspace.package]
+edition = "2024"
+
+[workspace.dependencies]
+sim = { path = "crates/sim" }
+fsw = { path = "crates/fsw" }
+mission = { path = "crates/mission" }
+glam = { version = "0.33", features = ["serde"] }
+nalgebra = "0.35"
+clarabel = "0.11"
+rand = "0.10"
+rand_distr = "0.6"
+rayon = "1.12"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Physics and the Bevy app are unusably slow without optimization.
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3

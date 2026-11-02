@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: System libraries for Bevy (audio, input, windowing)
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      # Guidance regressions show up as a lower landing rate long before a test fails.
+      - name: Monte Carlo landing rate
+        run: |
+          cargo run --release -p mission --bin lander -- mc landing --runs 200 --require 95
+          cargo run --release -p mission --bin lander -- mc full --runs 100 --require 95
+          cargo run --release -p mission --bin lander -- mc ship --runs 100 --require 95

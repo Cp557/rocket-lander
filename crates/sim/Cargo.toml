@@ -1,0 +1,10 @@
+[package]
+name = "sim"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+glam.workspace = true
+rand.workspace = true
+rand_distr.workspace = true
+serde.workspace = true

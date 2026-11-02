@@ -1,0 +1,12 @@
+[package]
+name = "app"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+sim.workspace = true
+fsw.workspace = true
+mission.workspace = true
+bevy = "0.20.1"
+bevy_egui = "0.43.1"
+egui_plot = "0.37.0"
