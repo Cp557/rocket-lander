@@ -15,7 +15,9 @@ runner, and a Bevy mission-control viewer with live telemetry and replay.
 
 `docs/` holds the README media (`landing.gif`, `drone-ship.jpg`, `drone-ship.mp4`), the
 write-up `how-it-works.md`, and `plots.py`, which draws its figures as standalone SVGs
-(standard-library Python; light and dark color schemes).
+(standard-library Python; light and dark color schemes). The README also shows two of
+them (`full-return-altitude.svg`, `stress-sweep.svg`). The project is MIT-licensed
+(`LICENSE`).
 
 Key libraries: `glam` 0.33 (f64 math in sim/fsw, f32 in logs and Bevy), `nalgebra` (Kalman
 filter matrices), `clarabel` (conic solver for G-FOLD), `rayon` (Monte Carlo), Bevy 0.20,
@@ -302,8 +304,10 @@ dead-reckon propellant, and the modeled positions to read the side force.
     0.05 rad/s; tilt command 0.3 rad per second and changing at 0.3 rad/s. The target tilt
     is upright, or the deck's predicted tilt at touchdown, to land square to it.
   - States are eliminated (a condensed QP in the commands only) and Clarabel solves it
-    every tick; the first command becomes the sideways thrust acceleration `a·tan(u)`. If
-    it fails, the sideways velocity is just damped at 0.8 /s.
+    every 5 ticks (0.1 s, the shortest plan step); the first command is held until the
+    next solve and becomes the sideways thrust acceleration `a·tan(u)` at each tick's
+    vertical acceleration. If it fails, the sideways velocity is just damped at 0.8 /s
+    and the next tick tries again. Solving every tick gave the same results 2–3× slower.
   - Takeover height: with its aerodynamic model, starting at 700 m did best (400 m and
     200 m slightly worse, 1200 m worse at stress 0). Without it, anything above 200 m
     did worse.
@@ -575,7 +579,7 @@ Reproduce with `lander mc <scenario> --runs N`. The nominal flights of all scena
 
 | Scenario | Dispersed runs | Landed | Miss (mean / p95) |
 |---|---|---|---|
-| Landing | 300 | 100% | 1.6 / 5.0 m |
+| Landing | 300 | 100% | 1.6 / 4.9 m |
 | Full return | 300 | 100% | 1.9 / 5.9 m |
 | Drone ship | 300 | 100% | 1.0 / 2.2 m |
 
@@ -588,9 +592,9 @@ Under stress (`lander sweep`, 200 runs per level):
 
 | Stress | 0 | 0.5 | 1 | 1.5 | 2 |
 |---|---|---|---|---|---|
-| Landing | 100% | 100% | 98.0% | 93.5% | 76.5% |
-| Full return | 100% | 99.0% | 98.5% | 94.0% | 79.0% |
-| Drone ship | 100% | 98.5% | 99.0% | 87.0% | 56.0% |
+| Landing | 100% | 99.5% | 99.0% | 92.5% | 76.5% |
+| Full return | 100% | 99.0% | 98.5% | 93.5% | 79.0% |
+| Drone ship | 100% | 98.5% | 98.5% | 87.5% | 55.5% |
 
 - On land the failures are mostly misses past 15 m in the strongest wind.
 - At sea, stress 2 stacks an engine failure, an accelerometer jump and a GPS outage during

@@ -16,7 +16,7 @@
 //! of angle of attack (small angles, falling base-first at air speed V through wind w),
 //! and the last line is the closed attitude loop following the tilt command u. States are
 //! eliminated (a condensed QP over u only, with box limits), and Clarabel solves it every
-//! tick; the first command is flown.
+//! 0.1 s (the shortest plan step); the first command is flown until the next solve.
 
 use clarabel::algebra::CscMatrix;
 use clarabel::solver::{DefaultSettings, DefaultSolver, IPSolver, SolverStatus, SupportedConeT};

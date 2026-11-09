@@ -57,7 +57,7 @@ the body tilts instantly, and the attitude takes about a second to follow. Termi
 guidance plans the tilt itself: a model-predictive controller for each horizontal axis,
 whose model includes the attitude loop's lag and the body's lift as it leans across the
 airflow. It aims for no sideways speed and an upright attitude at touchdown, within tilt
-limits that narrow toward the ground, and re-solves every tick.
+limits that narrow toward the ground, and re-solves every 0.1 s.
 
 ![Tilt over the last 200 m](figures/terminal-tilt.svg)
 

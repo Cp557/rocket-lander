@@ -4,6 +4,7 @@ members = ["crates/sim", "crates/fsw", "crates/mission", "crates/app"]
 
 [workspace.package]
 edition = "2024"
+license = "MIT"
 
 [workspace.dependencies]
 sim = { path = "crates/sim" }

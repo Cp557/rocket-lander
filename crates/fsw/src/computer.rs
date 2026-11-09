@@ -58,6 +58,9 @@ const TERMINAL_CUTOFF_HEIGHT: f64 = 0.5;
 const CLIMB_CUTOFF_HEIGHT: f64 = 5.0;
 /// If terminal guidance fails to solve, just null the sideways velocity at this rate (/s).
 const VELOCITY_ONLY_GAIN: f64 = 0.8;
+/// Ticks between terminal guidance solves. Its plan holds each tilt command for at least
+/// 0.1 s (five ticks), so the planned tilt is held in between.
+const TERMINAL_EVERY: u64 = 5;
 const REPLAN_PERIOD: f64 = 0.5;
 /// Stop replanning this close to the end of the plan; the last seconds are tracked as-is.
 const REPLAN_CUTOFF: f64 = 2.0;
@@ -151,6 +154,8 @@ pub struct FlightComputer {
     deck: Option<DeckPredictor>,
     /// When to touch down on the deck, once chosen.
     touchdown_at: Option<f64>,
+    /// The tilt terminal guidance last planned, held between solves.
+    held_tilt: Option<DVec2>,
     /// Cold gas left in the thruster tank (kg), as reported.
     rcs_gas: f64,
     /// Modeled body angular acceleration the lagging actuators are delivering from the
@@ -184,6 +189,7 @@ impl FlightComputer {
             engine_out: false,
             deck: None,
             touchdown_at: None,
+            held_tilt: None,
             rcs_gas: vehicle.rcs_gas,
             delivered: DVec3::ZERO,
         }
@@ -513,11 +519,17 @@ impl FlightComputer {
             _ => accel.z,
         };
         let accel = if height < terminal::HEIGHT {
+            if self.held_tilt.is_none() || self.ticks.is_multiple_of(TERMINAL_EVERY) {
+                self.held_tilt = self.terminal_tilt(est, vertical, height);
+            }
             let sideways = self
-                .terminal_accel(est, vertical, height)
-                .unwrap_or(-est.vel.truncate() * VELOCITY_ONLY_GAIN);
+                .held_tilt
+                .map_or(-est.vel.truncate() * VELOCITY_ONLY_GAIN, |tilt| {
+                    DVec2::new(tilt.x.tan(), tilt.y.tan()) * vertical.max(1.0)
+                });
             sideways.extend(vertical)
         } else {
+            self.held_tilt = None;
             let air = est.vel - est.local_wind();
             guidance::shape_thrust(&v, accel, air, est.pos.z, self.mass)
         };
@@ -570,9 +582,9 @@ impl FlightComputer {
             .unwrap_or(self.t + steady)
     }
 
-    /// Sideways thrust acceleration from terminal guidance, given the vertical thrust
-    /// acceleration and the height above touchdown.
-    fn terminal_accel(&self, est: &NavState, vertical: f64, height: f64) -> Option<DVec2> {
+    /// The tilt toward each horizontal axis from terminal guidance, given the vertical
+    /// thrust acceleration and the height above touchdown.
+    fn terminal_tilt(&self, est: &NavState, vertical: f64, height: f64) -> Option<DVec2> {
         let (eff, inertia) = self.effectors(est);
         let v = &self.vehicle;
         let authority = control::authority(v, &eff, inertia);
@@ -620,11 +632,10 @@ impl FlightComputer {
         let offset = est.pos - self.pad;
         let x = axis(offset.x, est.vel.x, nose.x, rate.y, wind.x);
         let y = axis(offset.y, est.vel.y, nose.y, -rate.x, wind.y);
-        let tilt = DVec2::new(
+        Some(DVec2::new(
             terminal::tilt_command(x, &model, &limits, final_tilt.x)?,
             terminal::tilt_command(y, &model, &limits, final_tilt.y)?,
-        );
-        Some(DVec2::new(tilt.x.tan(), tilt.y.tan()) * accel)
+        ))
     }
 
     /// What the flight computer believes it can push on, and the inertia it pushes.
