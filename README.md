@@ -1,16 +1,16 @@
 # Rocket Lander
 
 A simulator of a reusable rocket booster flying itself back to Earth and landing
-upright, on a landing pad or on a drone ship at sea, written in Rust.
+upright on a drone ship at sea, written in Rust. It can also land on a pad on the ground.
 
-![Landing at golden hour, cut between the onboard and pad cameras](docs/landing.gif)
+https://github.com/user-attachments/assets/65c9430b-3500-434a-bdb1-1529dfbeea90
+
+*The landing burn from a tracking camera and an onboard camera, with live telemetry.*
 
 The booster flies itself. Its flight software never sees the true state of the world: it
 gets only noisy sensor readings, as a real flight computer does, while a separate physics
 simulation decides what actually happens. Every flight brings different wind, a slightly
 different rocket and starting point, and sometimes a failed engine or a GPS dropout.
-
-**[How the booster lands](docs/how-it-works.md)** · **[Drone-ship landing with sound](docs/drone-ship.mp4)** (48 s video)
 
 ## The mission
 
@@ -24,11 +24,10 @@ different rocket and starting point, and sometimes a failed engine or a GPS drop
    the nearly empty booster weighs, so it cannot hover: it has to reach zero speed
    exactly at the ground.
 
-At sea, the drone ship waits 140 km downrange, near where the booster would fall anyway,
-so only a short boostback is needed. Its deck heaves with the swell, so the
-booster predicts the deck's motion and times its touchdown for when the deck is level.
-
-![Drone ship landing at sunset](docs/drone-ship.jpg)
+The drone ship waits 140 km downrange, near where the booster would fall anyway, so only
+a short boostback is needed. Its deck heaves with the swell, so the booster predicts the
+deck's motion and times its touchdown for when the deck is level. Landing on the ground
+instead takes a full boostback to a pad on land.
 
 ## How it works
 
@@ -58,9 +57,9 @@ Each scenario flown 300 times with randomized wind, vehicle and starting point:
 
 | Scenario | Landed | Average miss | 95% of landings within |
 |---|---|---|---|
-| Final descent (from 5 km) | 100% | 1.6 m | 4.9 m |
-| Full return (from 70 km) | 100% | 1.9 m | 5.9 m |
-| Drone ship at sea | 100% | 1.0 m | 2.2 m |
+| Drone ship at sea (from 70 km) | 100% | 1.0 m | 2.2 m |
+| Return to the land pad (from 70 km) | 100% | 1.9 m | 5.9 m |
+| Final descent to the pad (from 5 km) | 100% | 1.6 m | 4.9 m |
 
 Then the conditions get worse. A stress level adds stronger wind, rougher seas and
 faults: engine failures, GPS outages and sensor errors. At stress 1, about half of all
@@ -84,7 +83,7 @@ Needs [Rust](https://rustup.rs). The first build takes 10–15 minutes.
 
 ```bash
 cargo run --release -p app                                       # 3D viewer
-cargo run --release -p mission --bin lander -- fly full          # one flight, printed as a timeline
+cargo run --release -p mission --bin lander -- fly ship          # one flight, printed as a timeline
 cargo run --release -p mission --bin lander -- mc landing --runs 300   # Monte Carlo batch
 cargo run --release -p mission --bin lander -- sweep full --runs 200   # landing rate vs. stress
 cargo test --workspace

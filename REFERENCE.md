@@ -13,7 +13,10 @@ runner, and a Bevy mission-control viewer with live telemetry and replay.
 | `crates/mission` | Closed loop (`Flight`), flight log, landing judgement, Monte Carlo, `lander` CLI | `sim`, `fsw` |
 | `crates/app` | Bevy viewer: 3D scene, gizmo overlays, egui telemetry panels, replay, Monte Carlo window, sound, video export. `blender/booster.py` generates the embedded booster model | all of the above |
 
-`docs/` holds the README media (`landing.gif`, `drone-ship.jpg`, `drone-ship.mp4`), the
+`docs/` holds `drone-ship.mp4`, the source of the README's video (GitHub plays it from an
+upload, not from this file): the nominal drone-ship flight from T+253 s to T+271 s at
+hour 17.8, recorded with `--camera pad` and `--camera engine`, beside a telemetry panel
+drawn from the flight log, with the onboard soundtrack. It also holds the
 write-up `how-it-works.md`, and `plots.py`, which draws its figures as standalone SVGs
 (standard-library Python; light and dark color schemes). The README also shows two of
 them (`full-return-altitude.svg`, `stress-sweep.svg`). The project is MIT-licensed
