@@ -8,7 +8,7 @@ use bevy::prelude::*;
 use sim::ship::{DECK_HALF_LENGTH, DECK_HALF_WIDTH, FREEBOARD};
 
 use crate::playback::Playback;
-use crate::scene::{rotation_to_bevy, to_bevy};
+use crate::scene::{rotation_to_bevy, shown, to_bevy};
 
 /// Everything that belongs to the landing site ashore.
 #[derive(Component)]
@@ -180,13 +180,6 @@ pub fn update(
     let at_sea = ship.is_some();
     if *shown_at_sea != Some(at_sea) {
         *shown_at_sea = Some(at_sea);
-        let shown = |on: bool| {
-            if on {
-                Visibility::Inherited
-            } else {
-                Visibility::Hidden
-            }
-        };
         for mut v in &mut sites.p0() {
             *v = shown(!at_sea);
         }

@@ -3,7 +3,6 @@
 use glam::{DQuat, DVec2, DVec3};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
-use serde::{Deserialize, Serialize};
 
 use crate::dispersion::Faults;
 use crate::dynamics::{Inputs, State, rk4};
@@ -17,7 +16,7 @@ use crate::vehicle::Vehicle;
 use crate::{aero, contact};
 
 /// What the flight computer asks the hardware to do.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Commands {
     /// Number of engines to light (0, 1 or 3).
     pub engines: u8,
@@ -34,7 +33,7 @@ pub struct Commands {
 }
 
 /// Actual actuator positions after lags and rate limits.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Actuators {
     /// Engines actually lit: 2 when the three-engine group has lost an engine.
     pub engines: u8,
@@ -68,8 +67,6 @@ pub struct World {
     pub misalignment: DVec2,
     pub t: f64,
     pub info: WorldInfo,
-    /// The outer engine at body -x has failed.
-    pub engine_failed: bool,
     /// The drone ship to land on; `None` lands on the ground.
     pub ship: Option<Ship>,
     /// Cold gas left (kg); the thrusters fall silent when it runs out.
@@ -102,7 +99,6 @@ impl World {
             misalignment,
             t: 0.0,
             info: WorldInfo::default(),
-            engine_failed: false,
             ship: None,
             rcs_gas: vehicle.rcs_gas,
             engine_out_after: faults.engine_out_after,
@@ -170,7 +166,7 @@ impl World {
             }
         });
         SensorFrame {
-            engine_out: self.engine_failed,
+            engine_out: self.engine_failed(),
             deck,
             rcs_gas: self.rcs_gas,
             ..frame
@@ -181,17 +177,17 @@ impl World {
         &self.sensors
     }
 
+    /// The outer engine at body -x has failed.
+    pub fn engine_failed(&self) -> bool {
+        self.engine_out_after
+            .is_some_and(|after| self.descending_burn_time >= after)
+    }
+
     fn update_actuators(&mut self, cmd: &Commands, has_propellant: bool, dt: f64) {
         if cmd.engines == 3 && self.state.vel.z < 0.0 {
             self.descending_burn_time += dt;
         }
-        if self
-            .engine_out_after
-            .is_some_and(|after| self.descending_burn_time >= after)
-        {
-            self.engine_failed = true;
-        }
-        let engines = if self.engine_failed && cmd.engines == 3 {
+        let engines = if self.engine_failed() && cmd.engines == 3 {
             2
         } else {
             cmd.engines
@@ -215,11 +211,9 @@ impl World {
         } else if a.thrust_level < 0.01 {
             a.engines = 0;
         }
-        a.gimbal = slew2(
-            a.gimbal,
-            cmd.gimbal.clamp_length_max(v.gimbal_max),
-            v.gimbal_rate * dt,
-        );
+        let step = v.gimbal_rate * dt;
+        a.gimbal += (cmd.gimbal.clamp_length_max(v.gimbal_max) - a.gimbal)
+            .clamp(DVec2::splat(-step), DVec2::splat(step));
         if cmd.deploy_fins {
             a.fin_deploy = (a.fin_deploy + dt / v.fin_deploy_time).min(1.0);
         }
@@ -232,7 +226,8 @@ impl World {
         } else {
             DVec3::ZERO
         };
-        a.fins = slew3(a.fins, fin_target, v.fin_rate * dt);
+        let step = v.fin_rate * dt;
+        a.fins += (fin_target - a.fins).clamp(DVec3::splat(-step), DVec3::splat(step));
         a.rcs = if gas_left {
             cmd.rcs.clamp(-v.rcs_torque, v.rcs_torque)
         } else {
@@ -269,25 +264,6 @@ impl World {
             in_water: contact.in_water,
         }
     }
-}
-
-fn slew(current: f64, target: f64, max_step: f64) -> f64 {
-    current + (target - current).clamp(-max_step, max_step)
-}
-
-fn slew2(current: DVec2, target: DVec2, max_step: f64) -> DVec2 {
-    DVec2::new(
-        slew(current.x, target.x, max_step),
-        slew(current.y, target.y, max_step),
-    )
-}
-
-fn slew3(current: DVec3, target: DVec3, max_step: f64) -> DVec3 {
-    DVec3::new(
-        slew(current.x, target.x, max_step),
-        slew(current.y, target.y, max_step),
-        slew(current.z, target.z, max_step),
-    )
 }
 
 #[cfg(test)]
@@ -423,7 +399,7 @@ mod tests {
             ..Default::default()
         };
         run(&mut world, &cmd, 1.0);
-        assert!(world.engine_failed && world.sense().engine_out);
+        assert!(world.engine_failed() && world.sense().engine_out);
         assert_eq!(world.act.engines, 2);
         assert!((world.act.thrust_level - 2.0).abs() < 0.05);
         // The survivor at +x pushes off center, pitching the body about -y.

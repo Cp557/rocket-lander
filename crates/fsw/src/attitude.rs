@@ -62,11 +62,6 @@ impl AttitudeFilter {
         self.bias
     }
 
-    /// One-sigma attitude uncertainty (rad, root of the attitude covariance trace).
-    pub fn sigma(&self) -> f64 {
-        (self.p[(0, 0)] + self.p[(1, 1)] + self.p[(2, 2)]).sqrt()
-    }
-
     /// Carry the attitude forward by a gyro reading averaged over `dt`.
     pub fn propagate(&mut self, gyro: DVec3, dt: f64) {
         self.omega = gyro - self.bias;

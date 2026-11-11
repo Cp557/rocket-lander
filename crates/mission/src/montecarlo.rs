@@ -3,12 +3,11 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use rayon::prelude::*;
-use serde::{Deserialize, Serialize};
 
 use crate::flight::{Flight, FlightConfig, Outcome};
 use crate::scenario::Scenario;
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RunResult {
     pub seed: u64,
     pub outcome: Outcome,

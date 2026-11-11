@@ -3,7 +3,6 @@
 use std::f64::consts::PI;
 
 use glam::DVec3;
-use serde::{Deserialize, Serialize};
 
 use crate::env::{G0, SEA_LEVEL_PRESSURE};
 
@@ -11,7 +10,7 @@ use crate::env::{G0, SEA_LEVEL_PRESSURE};
 /// Heights below are measured from the base (engine plane) along +z. The center of mass
 /// moves up as the propellant, which sits low in the tanks, burns away, so offsets from it
 /// depend on the current mass.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug)]
 pub struct Vehicle {
     pub dry_mass: f64,
     pub length: f64,

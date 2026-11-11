@@ -4,7 +4,6 @@ use glam::{DQuat, DVec3};
 use rand::RngExt;
 use rand::rngs::StdRng;
 use rand_distr::StandardNormal;
-use serde::{Deserialize, Serialize};
 
 use crate::dispersion::Faults;
 use crate::dynamics::State;
@@ -29,7 +28,7 @@ pub const DECK_POS_NOISE: f64 = 0.1;
 pub const DECK_VEL_NOISE: f64 = 0.05;
 pub const DECK_ATT_NOISE: f64 = 0.002;
 
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug)]
 pub struct GpsFix {
     pub pos: DVec3,
     pub vel: DVec3,
@@ -37,7 +36,7 @@ pub struct GpsFix {
 
 /// The drone ship's report of where its deck center was `DECK_DELAY` ago, how it was
 /// moving, and how it was tilted.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug)]
 pub struct DeckFix {
     pub pos: DVec3,
     pub vel: DVec3,

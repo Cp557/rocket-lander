@@ -75,17 +75,19 @@ pub fn steering_axis(
 
 /// Smallest angle of attack (up to `max`) whose normal coefficient reaches `cn`.
 pub fn alpha_for_normal_coefficient(vehicle: &Vehicle, cn: f64, max: f64) -> f64 {
-    let (mut lo, mut hi) = (0.0, max);
-    if normal_coefficient(vehicle, hi) <= cn {
-        return hi;
+    bisect(|alpha| normal_coefficient(vehicle, alpha), cn, max, 30)
+}
+
+/// Where `f`, growing from 0 toward `end`, first reaches `target`, by bisection over
+/// `iterations` halvings; `end` if it never does.
+fn bisect(f: impl Fn(f64) -> f64, target: f64, end: f64, iterations: usize) -> f64 {
+    if f(end) <= target {
+        return end;
     }
-    for _ in 0..30 {
+    let (mut lo, mut hi) = (0.0, end);
+    for _ in 0..iterations {
         let mid = 0.5 * (lo + hi);
-        if normal_coefficient(vehicle, mid) < cn {
-            lo = mid
-        } else {
-            hi = mid
-        }
+        if f(mid) < target { lo = mid } else { hi = mid }
     }
     hi
 }
@@ -112,21 +114,14 @@ fn max_lean(vehicle: &Vehicle, thrust: f64, qs: f64) -> f64 {
 
 /// Signed lean off the flow line that produces `force` sideways, saturating at `max_lean`.
 fn lean_for(vehicle: &Vehicle, thrust: f64, qs: f64, force: f64) -> f64 {
+    // The net force grows monotonically from 0 to the limit.
     let limit = max_lean(vehicle, thrust, qs);
-    if lean_force(vehicle, thrust, qs, limit) <= force {
-        return limit;
-    }
-    // The net force grows monotonically from 0 to `limit`.
-    let (mut lo, mut hi) = (0.0, limit);
-    for _ in 0..40 {
-        let mid = 0.5 * (lo + hi);
-        if lean_force(vehicle, thrust, qs, mid) < force {
-            lo = mid
-        } else {
-            hi = mid
-        }
-    }
-    hi
+    bisect(
+        |lean| lean_force(vehicle, thrust, qs, lean),
+        force,
+        limit,
+        40,
+    )
 }
 
 /// Turn a requested landing-burn thrust acceleration into the one to fly: brake along the

@@ -5,7 +5,6 @@ use glam::{DVec2, DVec3};
 use rand::rngs::StdRng;
 use rand::{RngExt, SeedableRng};
 use serde::{Deserialize, Serialize};
-use sim::env::Wind;
 use sim::{Actuators, Commands, Dispersion, Ship, Vehicle, World};
 
 use crate::log::{Event, FlightLog, Frame, PlanRecord};
@@ -13,8 +12,6 @@ use crate::scenario::Scenario;
 
 pub const PHYSICS_DT: f64 = 0.002;
 pub const STEPS_PER_TICK: usize = 10;
-/// Flight-computer period (50 Hz).
-pub const TICK: f64 = PHYSICS_DT * STEPS_PER_TICK as f64;
 /// How long to watch the vehicle after touchdown before calling it landed.
 const SETTLE_TIME: f64 = 5.0;
 const TIME_LIMIT: f64 = 900.0;
@@ -132,17 +129,11 @@ impl Flight {
             fin_deploy: if start.fins_deployed { 1.0 } else { 0.0 },
             ..Default::default()
         };
-        let wind = Wind {
-            shear_exponent: dispersion.shear_exponent,
-            veer: dispersion.veer,
-            gust_sigma: dispersion.gust_sigma,
-            ..Wind::steady(dispersion.wind)
-        };
         let mut world = World::new(
             dispersion.apply(&nominal),
             truth,
             actuators,
-            wind,
+            dispersion.wind,
             dispersion.thrust_misalignment,
             dispersion.faults,
             rng.random(),
@@ -159,14 +150,17 @@ impl Flight {
         });
 
         let fsw = FlightComputer::new(nominal, &start.state, start.phase, start.fins_deployed);
-        let ship = world.ship;
         let mut flight = Self {
+            log: FlightLog {
+                config,
+                frames: Vec::new(),
+                events: Vec::new(),
+                plans: Vec::new(),
+                outcome: None,
+                ship: world.ship,
+            },
             world,
             fsw,
-            log: FlightLog {
-                ship,
-                ..FlightLog::new(config)
-            },
             last_phase: start.phase,
             last_plan_revision: 0,
             fins_announced: start.fins_deployed,
@@ -234,11 +228,8 @@ impl Flight {
             pos: s.pos.as_vec3(),
             vel: s.vel.as_vec3(),
             att: s.att.as_quat(),
-            omega: s.omega.as_vec3(),
             mass: s.mass as f32,
             est_pos: nav.pos.as_vec3(),
-            est_vel: nav.vel.as_vec3(),
-            est_att: nav.att.as_quat(),
             est_mass: self.fsw.mass() as f32,
             pos_sigma: nav.pos_sigma as f32,
             est_wind: self.fsw.wind().as_vec3(),
@@ -255,11 +246,6 @@ impl Flight {
             alpha: info.alpha as f32,
             wind: info.wind.as_vec3(),
             impact,
-            accel_cmd: if self.fsw.phase() == Phase::LandingBurn {
-                self.fsw.accel_cmd().as_vec3()
-            } else {
-                glam::Vec3::ZERO
-            },
             rcs_gas: self.world.rcs_gas as f32,
         });
     }
@@ -287,7 +273,7 @@ impl Flight {
             self.legs_announced = true;
             self.event("Legs deployed".into());
         }
-        if !self.engine_out_announced && self.world.engine_failed {
+        if !self.engine_out_announced && self.world.engine_failed() {
             self.engine_out_announced = true;
             self.event("Engine out".into());
         }

@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicUsize;
 use std::time::Instant;
 
-use mission::montecarlo::{self, RunResult, summarize};
+use mission::montecarlo::{self, RunResult, Summary, summarize};
 use mission::{Flight, FlightConfig, Scenario};
 
 const USAGE: &str =
@@ -129,8 +129,7 @@ fn batch(args: &Args, stress: f64) -> Vec<RunResult> {
     )
 }
 
-fn landed_percent(results: &[RunResult]) -> f64 {
-    let s = summarize(results);
+fn landed_percent(s: &Summary) -> f64 {
     100.0 * s.landed as f64 / s.runs.max(1) as f64
 }
 
@@ -144,7 +143,7 @@ fn monte_carlo(args: &Args) {
         args.stress,
         s.landed,
         s.runs,
-        landed_percent(&results),
+        landed_percent(&s),
         s.mean_miss,
         s.p95_miss,
         s.max_vertical_speed,
@@ -155,7 +154,7 @@ fn monte_carlo(args: &Args) {
         println!("  seed {}: {}", r.seed, r.outcome.verdict);
     }
     if let Some(required) = args.require
-        && landed_percent(&results) < required
+        && landed_percent(&s) < required
     {
         eprintln!("landed fewer than the required {required}%");
         std::process::exit(1);
@@ -174,7 +173,7 @@ fn sweep(args: &Args) {
         let s = summarize(&results);
         println!(
             "{stress:6.1}  {:5.1}%  {:5.1} / {:5.1} m  {}",
-            landed_percent(&results),
+            landed_percent(&s),
             s.mean_miss,
             s.p95_miss,
             most_common_failure(&results)

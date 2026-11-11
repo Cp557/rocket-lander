@@ -6,26 +6,25 @@ use glam::{DVec2, DVec3};
 use rand::RngExt;
 use rand::rngs::StdRng;
 use rand_distr::StandardNormal;
-use serde::{Deserialize, Serialize};
 
-use crate::env::NOMINAL_SHEAR_EXPONENT;
+use crate::env::{NOMINAL_SHEAR_EXPONENT, Wind};
 use crate::vehicle::Vehicle;
 
 /// GPS goes silent for `duration` seconds once the vehicle descends through `altitude`.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GpsOutage {
     pub altitude: f64,
     pub duration: f64,
 }
 
 /// The accelerometer bias jumps by `jump` once the vehicle descends through `altitude`.
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BiasJump {
     pub altitude: f64,
     pub jump: DVec3,
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Faults {
     /// Seconds of three-engine firing while descending before the outer engine at body -x
     /// fails for good.
@@ -34,7 +33,7 @@ pub struct Faults {
     pub accel_bias_jump: Option<BiasJump>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug)]
 pub struct Dispersion {
     pub dry_mass_scale: f64,
     pub isp_scale: f64,
@@ -42,11 +41,7 @@ pub struct Dispersion {
     pub drag_scale: f64,
     /// Fixed thrust-axis error added to the gimbal angles (rad).
     pub thrust_misalignment: DVec2,
-    /// Steady wind at the 10 km reference altitude.
-    pub wind: DVec2,
-    pub shear_exponent: f64,
-    pub veer: f64,
-    pub gust_sigma: f64,
+    pub wind: Wind,
     pub throttle_lag_scale: f64,
     pub position_error: DVec3,
     pub velocity_error: DVec3,
@@ -61,10 +56,7 @@ impl Dispersion {
             thrust_scale: 1.0,
             drag_scale: 1.0,
             thrust_misalignment: DVec2::ZERO,
-            wind: DVec2::ZERO,
-            shear_exponent: NOMINAL_SHEAR_EXPONENT,
-            veer: 0.0,
-            gust_sigma: 0.0,
+            wind: Wind::default(),
             throttle_lag_scale: 1.0,
             position_error: DVec3::ZERO,
             velocity_error: DVec3::ZERO,
@@ -91,14 +83,13 @@ impl Dispersion {
             thrust_scale,
             drag_scale,
             thrust_misalignment: misalignment,
-            wind: DVec2::from_angle(wind_heading) * wind_speed,
-            shear_exponent: NOMINAL_SHEAR_EXPONENT,
-            veer: 0.0,
-            gust_sigma: rng.random_range(0.0..2.0),
-            throttle_lag_scale: 1.0,
+            wind: Wind {
+                gust_sigma: rng.random_range(0.0..2.0),
+                ..Wind::steady(DVec2::from_angle(wind_heading) * wind_speed)
+            },
             position_error,
             velocity_error,
-            faults: Faults::default(),
+            ..Self::none()
         }
     }
 
@@ -112,10 +103,11 @@ impl Dispersion {
         }
         let s = severity;
         let mut uniform = |lo: f64, hi: f64| rng.random_range(lo..hi);
-        self.wind *= 1.0 + 0.5 * s * uniform(0.0, 1.0);
-        self.gust_sigma += s * uniform(0.0, 2.0);
-        self.shear_exponent = (NOMINAL_SHEAR_EXPONENT + 0.15 * s * uniform(-1.0, 1.0)).max(0.05);
-        self.veer = s * uniform(-45.0, 45.0).to_radians();
+        self.wind.reference *= 1.0 + 0.5 * s * uniform(0.0, 1.0);
+        self.wind.gust_sigma += s * uniform(0.0, 2.0);
+        self.wind.shear_exponent =
+            (NOMINAL_SHEAR_EXPONENT + 0.15 * s * uniform(-1.0, 1.0)).max(0.05);
+        self.wind.veer = s * uniform(-45.0, 45.0).to_radians();
         self.throttle_lag_scale = 1.0 + s * uniform(0.0, 1.0);
         let chance = (0.5 * s).min(1.0);
         let engine_out_after = uniform(0.0, 8.0);

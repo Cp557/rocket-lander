@@ -19,7 +19,7 @@ use crate::audio::{self, Moment};
 use crate::booster::EngineCluster;
 use crate::camera::{CameraMode, MainCamera, Orbit};
 use crate::overlay::Overlays;
-use crate::playback::Playback;
+use crate::playback::{FIRST_FLIGHT, Playback};
 use crate::scene::{TimeOfDay, from_bevy};
 
 /// Wall-clock time to let shaders compile and the model, shadows and sky settle before
@@ -52,12 +52,7 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, String> {
     let out = args.get(at + 1).ok_or("--record needs an output path")?;
     let mut options = Options {
         out: PathBuf::from(out),
-        config: FlightConfig {
-            scenario: Scenario::FullReturn,
-            seed: 1,
-            dispersed: false,
-            stress: 0.0,
-        },
+        config: FIRST_FLIGHT,
         camera: CameraMode::Auto,
         hour: TimeOfDay::default().hour,
         from: 0.0,
@@ -105,9 +100,6 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, String> {
 pub struct Recording {
     options: Options,
     frames_dir: PathBuf,
-    /// Rendered frames so far, including the warmup.
-    rendered: u32,
-    captured: u32,
     /// Frames rendered since the last capture, once capturing is over.
     flushed: Option<u32>,
     /// Where the camera was at each captured frame, for the soundtrack.
@@ -116,28 +108,24 @@ pub struct Recording {
 
 /// Set the app up to record `options` instead of showing the viewer.
 pub fn add(app: &mut App, options: Options) {
-    {
-        let frames_dir = options.out.with_extension("frames");
-        app.insert_resource(Playback {
-            playing: false,
-            ..Playback::live(options.config)
-        })
-        .insert_resource(Orbit {
-            mode: options.camera,
-            ..default()
-        })
-        .insert_resource(Overlays { show: false })
-        .insert_resource(TimeOfDay { hour: options.hour })
-        .insert_resource(Recording {
-            options,
-            frames_dir,
-            rendered: 0,
-            captured: 0,
-            flushed: None,
-            moments: Vec::new(),
-        })
-        .add_systems(Update, step.before(crate::playback::advance));
-    }
+    let frames_dir = options.out.with_extension("frames");
+    app.insert_resource(Playback {
+        playing: false,
+        ..Playback::live(options.config)
+    })
+    .insert_resource(Orbit {
+        mode: options.camera,
+        ..default()
+    })
+    .insert_resource(Overlays { show: false })
+    .insert_resource(TimeOfDay { hour: options.hour })
+    .insert_resource(Recording {
+        options,
+        frames_dir,
+        flushed: None,
+        moments: Vec::new(),
+    })
+    .add_systems(Update, step.before(crate::playback::advance));
 }
 
 #[allow(clippy::too_many_arguments)] // Bevy system parameters.
@@ -152,19 +140,12 @@ fn step(
     mut exit: MessageWriter<AppExit>,
 ) {
     let r = &mut *recording;
-    r.rendered += 1;
     if let Some(flushed) = &mut r.flushed {
         *flushed += 1;
         // Screenshots are written a few frames after they are taken, later under load.
         let written = std::fs::read_dir(&r.frames_dir).map_or(0, |dir| dir.count());
-        if written >= r.captured as usize || *flushed >= FLUSH_FRAMES {
-            encode(
-                &r.options,
-                &r.frames_dir,
-                r.captured,
-                playback.log(),
-                &r.moments,
-            );
+        if written >= r.moments.len() || *flushed >= FLUSH_FRAMES {
+            encode(&r.options, &r.frames_dir, playback.log(), &r.moments);
             exit.write(AppExit::Success);
         }
         return;
@@ -175,7 +156,7 @@ fn step(
         return;
     }
     let o = &r.options;
-    let t = o.from + r.captured as f64 / o.fps as f64 * o.speed;
+    let t = o.from + r.moments.len() as f64 / o.fps as f64 * o.speed;
     playback.simulate_to(t);
     let end = match o.to {
         Some(to) => to,
@@ -187,17 +168,18 @@ fn step(
         return;
     }
     playback.cursor = t.min(playback.log().duration());
-    if r.captured == 0 {
+    if r.moments.is_empty() {
         std::fs::create_dir_all(&r.frames_dir).expect("create the frames folder");
     }
-    r.captured += 1;
     // The camera has not moved for this frame yet; a frame's lag is inaudible.
     r.moments.push(Moment {
         t,
         listener: from_bevy(camera.translation),
         pad_view: orbit.active == CameraMode::Pad,
     });
-    let path = r.frames_dir.join(format!("frame_{:05}.png", r.captured));
+    let path = r
+        .frames_dir
+        .join(format!("frame_{:05}.png", r.moments.len()));
     commands
         .spawn(Screenshot::primary_window())
         .observe(save_to_disk(path));
@@ -206,10 +188,10 @@ fn step(
 fn encode(
     options: &Options,
     frames_dir: &std::path::Path,
-    frames: u32,
     log: &mission::FlightLog,
     moments: &[Moment],
 ) {
+    let frames = moments.len();
     let input = frames_dir.join("frame_%05d.png");
     let gif = options.out.extension().is_some_and(|e| e == "gif");
     let mut ffmpeg = Command::new("ffmpeg");

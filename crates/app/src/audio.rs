@@ -48,12 +48,6 @@ pub struct Sound {
     pub enabled: bool,
 }
 
-impl Default for Sound {
-    fn default() -> Self {
-        Self { enabled: true }
-    }
-}
-
 /// Live parameters of the roar, set by the main thread and read on the audio thread.
 #[derive(Default)]
 struct RoarControls {
@@ -266,7 +260,7 @@ struct AudioAssets {
 pub fn plugin(app: &mut App) {
     app.add_audio_source::<Roar>()
         .add_audio_source::<Clip>()
-        .init_resource::<Sound>()
+        .insert_resource(Sound { enabled: true })
         .add_systems(Startup, setup)
         .add_systems(Update, (roar, booms).after(crate::camera::follow));
 }

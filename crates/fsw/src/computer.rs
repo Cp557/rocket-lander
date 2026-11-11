@@ -147,7 +147,6 @@ pub struct FlightComputer {
     plan_revision: u32,
     last_replan: f64,
     last_cmd: Commands,
-    accel_cmd: DVec3,
     /// Engine health monitoring has reported a failed engine in the three-engine group.
     engine_out: bool,
     /// The drone ship's deck motion, learned from its reports.
@@ -185,7 +184,6 @@ impl FlightComputer {
             plan_revision: 0,
             last_replan: 0.0,
             last_cmd: Commands::default(),
-            accel_cmd: DVec3::ZERO,
             engine_out: false,
             deck: None,
             touchdown_at: None,
@@ -218,11 +216,6 @@ impl FlightComputer {
     /// Increments each time a new landing plan is adopted.
     pub fn plan_revision(&self) -> u32 {
         self.plan_revision
-    }
-
-    /// Thrust acceleration requested during the landing burn.
-    pub fn accel_cmd(&self) -> DVec3 {
-        self.accel_cmd
     }
 
     /// Estimated horizontal wind at the current altitude.
@@ -279,18 +272,11 @@ impl FlightComputer {
         self.thrust_level +=
             (target - self.thrust_level) * (1.0 - (-dt / v.throttle_time_constant).exp());
         self.mass = (self.mass - self.thrust_level * v.engine_mass_flow() * dt).max(v.dry_mass);
-        let slew = |at: f64, to: f64, rate: f64| at + (to - at).clamp(-rate * dt, rate * dt);
+        let gimbal_step = DVec2::splat(v.gimbal_rate * dt);
         let gimbal = self.last_cmd.gimbal.clamp_length_max(v.gimbal_max);
-        self.gimbal = DVec2::new(
-            slew(self.gimbal.x, gimbal.x, v.gimbal_rate),
-            slew(self.gimbal.y, gimbal.y, v.gimbal_rate),
-        );
-        let fins = self.last_cmd.fins;
-        self.fins = DVec3::new(
-            slew(self.fins.x, fins.x, v.fin_rate),
-            slew(self.fins.y, fins.y, v.fin_rate),
-            slew(self.fins.z, fins.z, v.fin_rate),
-        );
+        self.gimbal += (gimbal - self.gimbal).clamp(-gimbal_step, gimbal_step);
+        let fin_step = DVec3::splat(v.fin_rate * dt);
+        self.fins += (self.last_cmd.fins - self.fins).clamp(-fin_step, fin_step);
     }
 
     /// Read the crossflow from the side force and hand it to navigation, which turns it into
@@ -461,14 +447,49 @@ impl FlightComputer {
         if est.pos.z < LEG_DEPLOY_ALTITUDE {
             self.deploy_legs = true;
         }
-        let v = self.vehicle;
-        let replan_due = self.t - self.last_replan >= REPLAN_PERIOD;
+        self.replan_if_due(est);
+        let planned = self.plan_accel(est);
+        // Over a drone ship's deck, the last meters are flown relative to the deck, to touch
+        // down at a moment when it is level and not rising.
+        let vertical = match deck_now {
+            Some(deck) if height < CALM_HEIGHT => self.deck_vertical(est, deck, height, closing),
+            _ => planned.z,
+        };
+        // Near the ground terminal guidance plans the sideways motion, aiming above all for
+        // an upright touchdown without sideways speed. Higher up, fly the plan, leaning off
+        // the flow line as the aerodynamics allow.
+        let accel = if height < terminal::HEIGHT {
+            self.terminal_accel(est, vertical, height)
+        } else {
+            self.held_tilt = None;
+            let air = est.vel - est.local_wind();
+            guidance::shape_thrust(&self.vehicle, planned, air, est.pos.z, self.mass)
+        };
+        let accel = guidance::cone_limit(accel, DVec3::Z, guidance::tilt_limit(height));
+        let throttle = self.mass * accel.length() / self.vehicle.engine_thrust(pressure(est.pos.z));
+        Intent {
+            engines: 1,
+            throttle,
+            axis: accel.normalize(),
+        }
+    }
+
+    /// Re-solve the landing plan for the time it has left, every `REPLAN_PERIOD` until its
+    /// last seconds. If no plan is found, keep flying the old one.
+    fn replan_if_due(&mut self, est: &NavState) {
+        let due = self.t - self.last_replan >= REPLAN_PERIOD;
         if let Some(remaining) = self.plan.as_ref().map(|p| p.end() - self.t)
-            && replan_due
+            && due
             && remaining > REPLAN_CUTOFF
         {
-            let problem =
-                guidance::landing_problem(&v, est.pos, est.vel, &est.wind, self.mass, self.pad);
+            let problem = guidance::landing_problem(
+                &self.vehicle,
+                est.pos,
+                est.vel,
+                &est.wind,
+                self.mass,
+                self.pad,
+            );
             let plan = [1.0, 1.05, 0.95, 1.1, 0.9]
                 .iter()
                 .find_map(|f| gfold::solve(&problem, remaining * f, self.t));
@@ -477,12 +498,16 @@ impl FlightComputer {
                 None => self.last_replan = self.t,
             }
         }
+    }
 
+    /// Thrust acceleration that flies the landing plan, with feedback toward its position
+    /// and velocity; the fallback law once there is no plan or it has run out.
+    fn plan_accel(&self, est: &NavState) -> DVec3 {
         // Vertical tracking can be brisk (throttle responds in ~0.15 s); horizontal tracking
         // must stay well below the attitude loop's bandwidth, since it works by tilting.
         let vertical = double_integrator_lqr(2.0, 1.0, 3.0);
         let horizontal = double_integrator_lqr(5.0, 2.0, 2.0);
-        let accel = match &self.plan {
+        match &self.plan {
             Some(plan) if self.t <= plan.end() => {
                 let (pos, vel, thrust_accel) = plan.sample(self.t);
                 let (dp, dv) = (pos - est.pos, vel - est.vel);
@@ -490,57 +515,41 @@ impl FlightComputer {
                     .extend(dp.z * vertical.kp + dv.z * vertical.kd);
                 thrust_accel + feedback
             }
-            _ => guidance::fallback_accel(&v, est.pos, est.vel, self.mass, self.pad),
-        };
-        let height = est.pos.z - self.pad.z - v.standing_height(self.mass);
-        // Near the ground terminal guidance plans the sideways motion, aiming above all for
-        // an upright touchdown without sideways speed. Higher up, fly the plan, leaning off
-        // the flow line as the aerodynamics allow.
-        // Over a drone ship's deck, the last meters are flown relative to the deck, to
-        // touch down at a moment when it is level and not rising.
-        let vertical = match deck_now {
-            Some(deck) if height < CALM_HEIGHT => {
-                let touchdown = match self.touchdown_at {
-                    Some(t) => t,
-                    None => *self.touchdown_at.insert(self.calm_moment(height, -closing)),
-                };
-                let to_go = touchdown - self.t;
-                // Arrive at the deck at the chosen time and speed: the minimum-effort
-                // (zero-effort miss and velocity) law on height and speed above the deck.
-                let relative = if to_go > DECK_FINAL_TIME {
-                    let miss = -(height + closing * to_go);
-                    let speed_error = -DECK_TOUCHDOWN_SPEED - closing;
-                    6.0 * miss / to_go.powi(2) - 2.0 * speed_error / to_go
-                } else {
-                    DECK_MATCH_GAIN * (-DECK_TOUCHDOWN_SPEED - closing)
-                };
-                gravity(est.pos.z) + deck.accel_z + relative
-            }
-            _ => accel.z,
-        };
-        let accel = if height < terminal::HEIGHT {
-            if self.held_tilt.is_none() || self.ticks.is_multiple_of(TERMINAL_EVERY) {
-                self.held_tilt = self.terminal_tilt(est, vertical, height);
-            }
-            let sideways = self
-                .held_tilt
-                .map_or(-est.vel.truncate() * VELOCITY_ONLY_GAIN, |tilt| {
-                    DVec2::new(tilt.x.tan(), tilt.y.tan()) * vertical.max(1.0)
-                });
-            sideways.extend(vertical)
-        } else {
-            self.held_tilt = None;
-            let air = est.vel - est.local_wind();
-            guidance::shape_thrust(&v, accel, air, est.pos.z, self.mass)
-        };
-        let accel = guidance::cone_limit(accel, DVec3::Z, guidance::tilt_limit(height));
-        self.accel_cmd = accel;
-        let throttle = self.mass * accel.length() / v.engine_thrust(pressure(est.pos.z));
-        Intent {
-            engines: 1,
-            throttle,
-            axis: accel.normalize(),
+            _ => guidance::fallback_accel(&self.vehicle, est.pos, est.vel, self.mass, self.pad),
         }
+    }
+
+    /// Vertical thrust acceleration `height` above the deck, closing at `closing`: arrive at
+    /// the calm moment (chosen once) at touchdown speed, by the minimum-effort (zero-effort
+    /// miss and velocity) law on height and speed above the deck.
+    fn deck_vertical(&mut self, est: &NavState, deck: DeckState, height: f64, closing: f64) -> f64 {
+        let touchdown = match self.touchdown_at {
+            Some(t) => t,
+            None => *self.touchdown_at.insert(self.calm_moment(height, -closing)),
+        };
+        let to_go = touchdown - self.t;
+        let relative = if to_go > DECK_FINAL_TIME {
+            let miss = -(height + closing * to_go);
+            let speed_error = -DECK_TOUCHDOWN_SPEED - closing;
+            6.0 * miss / to_go.powi(2) - 2.0 * speed_error / to_go
+        } else {
+            DECK_MATCH_GAIN * (-DECK_TOUCHDOWN_SPEED - closing)
+        };
+        gravity(est.pos.z) + deck.accel_z + relative
+    }
+
+    /// Thrust acceleration under terminal guidance: its planned tilt (re-solved every
+    /// `TERMINAL_EVERY` ticks and held in between) at the given vertical acceleration.
+    fn terminal_accel(&mut self, est: &NavState, vertical: f64, height: f64) -> DVec3 {
+        if self.held_tilt.is_none() || self.ticks.is_multiple_of(TERMINAL_EVERY) {
+            self.held_tilt = self.terminal_tilt(est, vertical, height);
+        }
+        let sideways = self
+            .held_tilt
+            .map_or(-est.vel.truncate() * VELOCITY_ONLY_GAIN, |tilt| {
+                DVec2::new(tilt.x.tan(), tilt.y.tan()) * vertical.max(1.0)
+            });
+        sideways.extend(vertical)
     }
 
     /// When to touch down on the deck, `height` above it and closing at `speed`: the

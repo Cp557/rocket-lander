@@ -9,7 +9,7 @@ runner, and a Bevy mission-control viewer with live telemetry and replay.
 | Crate | Role | Depends on |
 |---|---|---|
 | `crates/sim` | Truth world: vehicle, rigid-body dynamics, atmosphere, wind, aero, contact with the ground or the drone ship, actuators, sensors, dispersions | — |
-| `crates/fsw` | Flight software: navigation, phase state machine, guidance (predictor, aero steering, G-FOLD, terminal MPC), attitude control and allocation | `sim` (only the `Vehicle` model, `SensorFrame`, `Commands`, `State` for the initial handover, and shared environment/aero formulas) |
+| `crates/fsw` | Flight software: navigation, phase state machine, guidance (predictor, aero steering, G-FOLD, terminal MPC), attitude control and allocation | `sim` (the `Vehicle` model, `SensorFrame`, `Commands`, `State` for the initial handover, the sensor noise and deck-report latency constants, and shared environment/aero formulas) |
 | `crates/mission` | Closed loop (`Flight`), flight log, landing judgement, Monte Carlo, `lander` CLI | `sim`, `fsw` |
 | `crates/app` | Bevy viewer: 3D scene, gizmo overlays, egui telemetry panels, replay, Monte Carlo window, sound, video export. `blender/booster.py` generates the embedded booster model | all of the above |
 
@@ -52,7 +52,8 @@ builds are usable, but the viewer and Monte Carlo are much faster in `--release`
   built in that mapped body frame (long axis = local +Y).
 - **Units:** SI throughout; angles in radians in code, degrees only in UI and printouts.
 - **Timing:** physics RK4 at 500 Hz (`PHYSICS_DT = 0.002`), flight computer and log at
-  50 Hz (`TICK = 0.02`, 10 physics steps per tick).
+  50 Hz (0.02 s, `STEPS_PER_TICK = 10` physics steps; `fsw::control::CONTROL_PERIOD`
+  must match).
 - **Determinism:** a `FlightConfig { scenario, seed, dispersed, stress }` fully determines a
   flight. All randomness (dispersions, sensor noise, gusts) comes from
   `StdRng::seed_from_u64(seed)`; the stress draws and the sea state come from separate
@@ -114,7 +115,7 @@ Falcon-like first stage: dry mass 25.6 t, length 40 m, radius 1.85 m, center of 
   - The surface is flat ground at z = 0, or the drone ship's deck (see below): a 90 × 52 m
     plane moving with the ship, pushing along its normal and rubbing against the
     velocity relative to it. A point more than 2 m under the deck plane has gone past its
-    edge. Any point more than 4 m below z = 0 near the ship is in the sea.
+    edge. With a ship present, any point more than 4 m below z = 0 is in the sea.
 
 ### Drone ship (`ship.rs`)
 
@@ -168,7 +169,8 @@ nothing; 1 is a bad day). Each scales with the severity s:
   - The outer engine at −x fails 0–8 s into three-engine firing while descending (the
     entry burn).
   - A GPS outage of 5–15·s seconds starting between 300 m and 4 km.
-  - An accelerometer bias jump of 0.05·s m/s² between 300 m and 4 km.
+  - An accelerometer bias jump of 0.05–0.07·s m/s² in a random direction between 300 m
+    and 4 km.
 
 The flight software always assumes the nominal vehicle and starts from the nominal state.
 
@@ -359,14 +361,15 @@ dead-reckon propellant, and the modeled positions to read the side force.
 - **`Flight::tick`:** sense → `fsw.step` → record the frame (truth and estimate at the same
   instant) → 10 physics steps → judge.
 - **`FlightLog`:** one `Frame` per tick (f32: truth, estimate including the wind estimate,
-  actuators, aero, predicted impact, guidance acceleration command), plus `events` (phase changes, deployments,
+  actuators, aero, predicted impact), plus `events` (phase changes, deployments,
   touchdown, outcome), `plans` (each adopted G-FOLD trajectory with its adoption time),
   and `outcome`.
   - Save and load as JSON.
   - `frames_around(t)` and `plan_at(t)` serve replay.
 - **Judgement:** the first ground contact records a `Touchdown` from truth. On the drone
   ship, everything is relative to the deck: position from its center, speeds against
-  the deck surface under the booster, and tilt from the deck's normal.
+  the deck surface under the booster, and tilt from the deck's normal. Tilt rate is the
+  body's own rate in both cases.
   - Any hull contact is an immediate crash, and so is any point in the sea ("fell into
     the sea").
   - Otherwise the flight ends 5 s after touchdown and is graded against the limits:
@@ -610,7 +613,6 @@ Under stress (`lander sweep`, 200 runs per level):
 - The drone ship holds station exactly and moves in three pure sinusoids. The visual swell
   only resembles its motion.
 - Fins are ideal force generators.
-- RCS is continuous torque with no propellant.
 - The cold-gas thrusters are a continuous torque, not pulsed jets.
 - The flight software assumes the nominal wind profile shape (no veer, exponent 0.2) and
   only estimates its strength and direction.

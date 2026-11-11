@@ -3,17 +3,15 @@
 //! that advance with flight time, so they pause with playback, speed up with it, and are
 //! cleared when the cursor jumps.
 
-use bevy::asset::RenderAssetUsages;
 use bevy::light::NotShadowCaster;
 use bevy::prelude::*;
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use sim::Vehicle;
 
 use crate::booster::NOZZLE_EXIT_BELOW_BASE;
 use crate::camera::MainCamera;
 use crate::playback::Playback;
 use crate::scene::{TimeOfDay, darkness, rotation_to_bevy, to_bevy};
-use crate::terrain::fbm;
+use crate::terrain::{fbm, rgba_image};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -39,9 +37,8 @@ pub struct Particle {
 #[derive(Resource)]
 pub struct ParticleAssets {
     mesh: Handle<Mesh>,
-    smoke: Vec<Handle<StandardMaterial>>,
-    dust: Vec<Handle<StandardMaterial>>,
-    gas: Vec<Handle<StandardMaterial>>,
+    /// Indexed by `Kind`.
+    ladders: [Vec<Handle<StandardMaterial>>; 3],
 }
 
 const FADE_STEPS: usize = 8;
@@ -80,17 +77,7 @@ pub fn radial_fade_texture(noisy: bool) -> Image {
             data.extend_from_slice(&[255, 255, 255, (alpha * 255.0) as u8]);
         }
     }
-    Image::new(
-        Extent3d {
-            width: SIZE as u32,
-            height: SIZE as u32,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        data,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    )
+    rgba_image(SIZE as u32, SIZE as u32, data)
 }
 
 /// Opaque at the bottom row (v = 0) and fading out toward the top, for surfaces of
@@ -103,17 +90,7 @@ pub fn linear_fade_texture() -> Image {
             [255, 255, 255, (alpha * 255.0) as u8]
         })
         .collect();
-    Image::new(
-        Extent3d {
-            width: 1,
-            height: SIZE as u32,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        data,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    )
+    rgba_image(1, SIZE as u32, data)
 }
 
 pub fn setup(
@@ -141,16 +118,13 @@ pub fn setup(
             })
             .collect()
     };
-    let smoke = ladder(0.78, 0.78, 0.76, 0.35);
-    let dust = ladder(0.60, 0.53, 0.42, 0.5);
-    let gas = ladder(0.95, 0.95, 0.97, 0.45);
+    let ladders = [
+        ladder(0.78, 0.78, 0.76, 0.35),
+        ladder(0.60, 0.53, 0.42, 0.5),
+        ladder(0.95, 0.95, 0.97, 0.45),
+    ];
     let mesh = meshes.add(Rectangle::new(1.0, 1.0));
-    commands.insert_resource(ParticleAssets {
-        mesh,
-        smoke,
-        dust,
-        gas,
-    });
+    commands.insert_resource(ParticleAssets { mesh, ladders });
 }
 
 /// By day the particles glow with scattered sunlight; at night only lights show them.
@@ -165,7 +139,7 @@ pub fn daylight(
     }
     *shown_hour = Some(time.hour);
     let day = 1.0 - darkness(time.hour);
-    for handle in assets.smoke.iter().chain(&assets.dust).chain(&assets.gas) {
+    for handle in assets.ladders.iter().flatten() {
         if let Some(mut m) = materials.get_mut(handle) {
             let c = m.base_color.to_linear();
             m.emissive = LinearRgba::rgb(c.red, c.green, c.blue) * day * DAY_GLOW;
@@ -254,12 +228,7 @@ pub fn update(
         t.scale = Vec3::splat(p.start_size + (p.end_size - p.start_size) * progress);
         t.rotation = camera.rotation * Quat::from_rotation_z(p.spin);
         let step = ((progress * FADE_STEPS as f32) as usize).min(FADE_STEPS - 1);
-        let ladder = match p.kind {
-            Kind::Smoke => &assets.smoke,
-            Kind::Dust => &assets.dust,
-            Kind::Gas => &assets.gas,
-        };
-        material.0 = ladder[step].clone();
+        material.0 = assets.ladders[p.kind as usize][step].clone();
     }
 
     let mut budget = MAX_PARTICLES.saturating_sub(particles.iter().len());
@@ -275,11 +244,6 @@ pub fn update(
             return;
         }
         budget -= 1;
-        let material = match kind {
-            Kind::Smoke => &assets.smoke[0],
-            Kind::Dust => &assets.dust[0],
-            Kind::Gas => &assets.gas[0],
-        };
         commands.spawn((
             Particle {
                 kind,
@@ -291,7 +255,7 @@ pub fn update(
                 spin,
             },
             Mesh3d(assets.mesh.clone()),
-            MeshMaterial3d(material.clone()),
+            MeshMaterial3d(assets.ladders[kind as usize][0].clone()),
             NotShadowCaster,
             Transform::from_translation(pos)
                 .with_scale(Vec3::splat(sizes.0))

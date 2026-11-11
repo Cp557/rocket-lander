@@ -20,11 +20,8 @@ pub struct Frame {
     pub pos: Vec3,
     pub vel: Vec3,
     pub att: Quat,
-    pub omega: Vec3,
     pub mass: f32,
     pub est_pos: Vec3,
-    pub est_vel: Vec3,
-    pub est_att: Quat,
     pub est_mass: f32,
     pub pos_sigma: f32,
     /// Flight computer's horizontal wind estimate.
@@ -44,8 +41,6 @@ pub struct Frame {
     pub wind: Vec3,
     /// Flight computer's predicted impact point.
     pub impact: Option<Vec2>,
-    /// Thrust acceleration requested by landing guidance (zero before the landing burn).
-    pub accel_cmd: Vec3,
     /// Cold gas left (kg).
     #[serde(default)]
     pub rcs_gas: f32,
@@ -77,17 +72,6 @@ pub struct FlightLog {
 }
 
 impl FlightLog {
-    pub fn new(config: FlightConfig) -> Self {
-        Self {
-            config,
-            frames: Vec::new(),
-            events: Vec::new(),
-            plans: Vec::new(),
-            outcome: None,
-            ship: None,
-        }
-    }
-
     pub fn duration(&self) -> f64 {
         self.frames.last().map_or(0.0, |f| f.t as f64)
     }

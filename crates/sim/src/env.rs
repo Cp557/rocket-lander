@@ -4,7 +4,6 @@ use glam::{DVec2, DVec3};
 use rand::RngExt;
 use rand::rngs::StdRng;
 use rand_distr::StandardNormal;
-use serde::{Deserialize, Serialize};
 
 pub const G0: f64 = 9.80665;
 pub const EARTH_RADIUS: f64 = 6_371_000.0;
@@ -90,7 +89,7 @@ pub fn wind_profile(altitude: f64, exponent: f64) -> f64 {
 }
 
 /// Horizontal wind: a steady altitude profile plus first-order Gauss-Markov gusts.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug)]
 pub struct Wind {
     /// Steady wind velocity at the reference altitude.
     pub reference: DVec2,

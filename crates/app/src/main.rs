@@ -21,7 +21,6 @@ use bevy::asset::embedded_asset;
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
-use mission::{FlightConfig, Scenario};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
@@ -31,12 +30,6 @@ fn main() {
             eprintln!("{e}");
             std::process::exit(2);
         }
-    };
-    let first_flight = FlightConfig {
-        scenario: Scenario::FullReturn,
-        seed: 1,
-        dispersed: false,
-        stress: 0.0,
     };
     let (width, height) = recording.as_ref().map_or((1600, 900), |r| r.size);
     let mut resolution = WindowResolution::new(width, height);
@@ -55,10 +48,10 @@ fn main() {
         ..default()
     }))
     .add_plugins(EguiPlugin::default())
-    .insert_resource(playback::Playback::live(first_flight))
+    .insert_resource(playback::Playback::live(playback::FIRST_FLIGHT))
     .init_resource::<montecarlo::MonteCarlo>()
     .init_resource::<camera::Orbit>()
-    .init_resource::<overlay::Overlays>()
+    .insert_resource(overlay::Overlays { show: true })
     .init_resource::<scene::TimeOfDay>()
     .insert_resource(ClearColor(Color::BLACK))
     .add_systems(

@@ -126,17 +126,7 @@ pub fn detail_texture() -> Image {
             data.extend_from_slice(&[value, value, value, 255]);
         }
     }
-    let mut image = Image::new(
-        Extent3d {
-            width: TEXTURE_SIZE as u32,
-            height: TEXTURE_SIZE as u32,
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        data,
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::RENDER_WORLD,
-    );
+    let mut image = rgba_image(TEXTURE_SIZE as u32, TEXTURE_SIZE as u32, data);
     image.sampler = ImageSampler::Descriptor(ImageSamplerDescriptor {
         address_mode_u: ImageAddressMode::Repeat,
         address_mode_v: ImageAddressMode::Repeat,
@@ -147,6 +137,21 @@ pub fn detail_texture() -> Image {
         ..default()
     });
     image
+}
+
+/// An sRGB RGBA8 texture from rows of pixels.
+pub fn rgba_image(width: u32, height: u32, data: Vec<u8>) -> Image {
+    Image::new(
+        Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        data,
+        TextureFormat::Rgba8UnormSrgb,
+        RenderAssetUsages::RENDER_WORLD,
+    )
 }
 
 fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {

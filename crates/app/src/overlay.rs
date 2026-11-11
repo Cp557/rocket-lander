@@ -22,12 +22,6 @@ pub struct Overlays {
     pub show: bool,
 }
 
-impl Default for Overlays {
-    fn default() -> Self {
-        Self { show: true }
-    }
-}
-
 pub fn draw(playback: Res<Playback>, overlays: Res<Overlays>, mut gizmos: Gizmos) {
     if !overlays.show {
         return;

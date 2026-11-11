@@ -10,8 +10,8 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use bevy_egui::{EguiContexts, egui};
 use egui::{Color32, LayerId, RichText, Ui, UiBuilder};
-use egui_plot::{Legend, Line, Plot, PlotPoints, Points, VLine};
-use mission::flight::{MAX_HORIZONTAL_SPEED, MAX_VERTICAL_SPEED, PAD_RADIUS};
+use egui_plot::{Legend, Line, Plot, PlotPoints, PlotUi, Points, VLine};
+use mission::flight::{MAX_HORIZONTAL_SPEED, MAX_VERTICAL_SPEED, PAD_RADIUS, Touchdown};
 use mission::montecarlo::RunResult;
 use mission::{FlightConfig, FlightLog, Frame, Scenario};
 use sim::Vehicle;
@@ -20,7 +20,7 @@ use crate::audio::Sound;
 use crate::camera::{CameraMode, MainCamera, Orbit};
 use crate::montecarlo::MonteCarlo;
 use crate::overlay::Overlays;
-use crate::playback::Playback;
+use crate::playback::{FIRST_FLIGHT, Playback};
 use crate::scene::TimeOfDay;
 
 const FLIGHTS_DIR: &str = "flights";
@@ -33,10 +33,7 @@ const GOOD: Color32 = Color32::from_rgb(80, 200, 120);
 const BAD: Color32 = Color32::from_rgb(230, 80, 80);
 
 pub struct UiState {
-    scenario: Scenario,
-    seed: u64,
-    dispersed: bool,
-    stress: f64,
+    config: FlightConfig,
     monte_carlo_open: bool,
     monte_carlo_runs: usize,
     status: String,
@@ -45,10 +42,7 @@ pub struct UiState {
 impl Default for UiState {
     fn default() -> Self {
         Self {
-            scenario: Scenario::FullReturn,
-            seed: 1,
-            dispersed: false,
-            stress: 0.0,
+            config: FIRST_FLIGHT,
             monte_carlo_open: false,
             monte_carlo_runs: 100,
             status: String::new(),
@@ -225,22 +219,20 @@ fn controls(
     });
     ui.horizontal(|ui| {
         egui::ComboBox::from_id_salt("scenario")
-            .selected_text(state.scenario.label())
+            .selected_text(state.config.scenario.label())
             .show_ui(ui, |ui| {
                 for scenario in Scenario::ALL {
-                    ui.selectable_value(&mut state.scenario, scenario, scenario.label());
+                    ui.selectable_value(&mut state.config.scenario, scenario, scenario.label());
                 }
             });
-        ui.add(egui::DragValue::new(&mut state.seed).prefix("seed "));
-        ui.checkbox(&mut state.dispersed, "dispersed");
-        ui.add_enabled(state.dispersed, stress_input(&mut state.stress));
+        ui.add(egui::DragValue::new(&mut state.config.seed).prefix("seed "));
+        ui.checkbox(&mut state.config.dispersed, "dispersed");
+        ui.add_enabled(
+            state.config.dispersed,
+            stress_input(&mut state.config.stress),
+        );
         if ui.button("Fly").clicked() {
-            *playback = Playback::live(FlightConfig {
-                scenario: state.scenario,
-                seed: state.seed,
-                dispersed: state.dispersed,
-                stress: state.stress,
-            });
+            *playback = Playback::live(state.config);
             state.status.clear();
         }
         ui.separator();
@@ -473,8 +465,11 @@ fn monte_carlo_window(
         .default_width(440.0)
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(format!("{} with dispersions", state.scenario.label()));
-                ui.add(stress_input(&mut state.stress));
+                ui.label(format!(
+                    "{} with dispersions",
+                    state.config.scenario.label()
+                ));
+                ui.add(stress_input(&mut state.config.stress));
                 ui.add(
                     egui::DragValue::new(&mut state.monte_carlo_runs)
                         .range(10..=2000)
@@ -484,7 +479,12 @@ fn monte_carlo_window(
                     .add_enabled(monte_carlo.job.is_none(), egui::Button::new("Run"))
                     .clicked()
                 {
-                    monte_carlo.start(state.scenario, state.monte_carlo_runs, 1, state.stress);
+                    monte_carlo.start(
+                        state.config.scenario,
+                        state.monte_carlo_runs,
+                        1,
+                        state.config.stress,
+                    );
                 }
             });
             if let Some(job) = &monte_carlo.job {
@@ -511,18 +511,6 @@ fn monte_carlo_window(
             ));
             let (landed, failed): (Vec<_>, Vec<_>) =
                 batch.runs.iter().partition(|r| r.outcome.landed);
-            let touchdowns = |runs: &[&RunResult]| -> Vec<[f64; 2]> {
-                runs.iter()
-                    .filter_map(|r| r.outcome.touchdown)
-                    .map(|t| [t.position.x, t.position.y])
-                    .collect()
-            };
-            let speeds = |runs: &[&RunResult]| -> Vec<[f64; 2]> {
-                runs.iter()
-                    .filter_map(|r| r.outcome.touchdown)
-                    .map(|t| [t.horizontal_speed, t.vertical_speed])
-                    .collect()
-            };
             ui.label(RichText::new("Where they touched down [m]").strong());
             Plot::new("touchdowns")
                 .height(280.0)
@@ -536,16 +524,7 @@ fn monte_carlo_window(
                         })
                         .collect();
                     plot.line(Line::new("pad", PlotPoints::from(pad)).color(Color32::GOLD));
-                    plot.points(
-                        Points::new("landed", PlotPoints::from(touchdowns(&landed)))
-                            .color(GOOD)
-                            .radius(3.0),
-                    );
-                    plot.points(
-                        Points::new("failed", PlotPoints::from(touchdowns(&failed)))
-                            .color(BAD)
-                            .radius(3.0),
-                    );
+                    scatter(plot, &landed, &failed, |t| [t.position.x, t.position.y]);
                 });
             ui.label(RichText::new("Touchdown speed [m/s]: horizontal vs. descent").strong());
             Plot::new("touchdown speeds")
@@ -557,16 +536,9 @@ fn monte_carlo_window(
                     let (h, v) = (MAX_HORIZONTAL_SPEED, MAX_VERTICAL_SPEED);
                     let limits = vec![[h, 0.0], [h, v], [0.0, v]];
                     plot.line(Line::new("limits", PlotPoints::from(limits)).color(Color32::GOLD));
-                    plot.points(
-                        Points::new("landed", PlotPoints::from(speeds(&landed)))
-                            .color(GOOD)
-                            .radius(3.0),
-                    );
-                    plot.points(
-                        Points::new("failed", PlotPoints::from(speeds(&failed)))
-                            .color(BAD)
-                            .radius(3.0),
-                    );
+                    scatter(plot, &landed, &failed, |t| {
+                        [t.horizontal_speed, t.vertical_speed]
+                    });
                 });
             ui.label(RichText::new("Failures").strong());
             egui::ScrollArea::vertical()
@@ -575,7 +547,12 @@ fn monte_carlo_window(
                     for run in &failed {
                         ui.horizontal(|ui| {
                             if ui.small_button("Replay").clicked() {
-                                replay = Some((batch.scenario, run.seed, batch.stress));
+                                replay = Some(FlightConfig {
+                                    scenario: batch.scenario,
+                                    seed: run.seed,
+                                    dispersed: true,
+                                    stress: batch.stress,
+                                });
                             }
                             ui.label(format!("seed {}: {}", run.seed, run.outcome.verdict));
                         });
@@ -583,16 +560,29 @@ fn monte_carlo_window(
                 });
         });
     state.monte_carlo_open = open;
-    if let Some((scenario, seed, stress)) = replay {
-        *playback = Playback::live(FlightConfig {
-            scenario,
-            seed,
-            dispersed: true,
-            stress,
-        });
-        state.scenario = scenario;
-        state.seed = seed;
-        state.dispersed = true;
-        state.stress = stress;
+    if let Some(config) = replay {
+        *playback = Playback::live(config);
+        state.config = config;
+    }
+}
+
+/// Touchdowns of the landed runs in green and the failed ones in red, placed by `point`.
+fn scatter(
+    plot: &mut PlotUi<'_>,
+    landed: &[&RunResult],
+    failed: &[&RunResult],
+    point: impl Fn(Touchdown) -> [f64; 2],
+) {
+    for (name, color, runs) in [("landed", GOOD, landed), ("failed", BAD, failed)] {
+        let points: Vec<[f64; 2]> = runs
+            .iter()
+            .filter_map(|r| r.outcome.touchdown)
+            .map(&point)
+            .collect();
+        plot.points(
+            Points::new(name, PlotPoints::from(points))
+                .color(color)
+                .radius(3.0),
+        );
     }
 }

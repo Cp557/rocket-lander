@@ -1,13 +1,12 @@
 //! 6-DOF rigid-body state and RK4 integration.
 
 use glam::{DQuat, DVec3};
-use serde::{Deserialize, Serialize};
 
 use crate::ship::DeckPose;
 use crate::vehicle::Vehicle;
 use crate::{aero, contact, env};
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct State {
     /// CoM position, world frame.
     pub pos: DVec3,

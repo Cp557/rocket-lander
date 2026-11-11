@@ -19,7 +19,7 @@ use sim::env::{SEA_LEVEL_PRESSURE, pressure};
 
 use crate::particles::{linear_fade_texture, radial_fade_texture};
 use crate::playback::Playback;
-use crate::scene::{from_bevy, rotation_to_bevy, to_bevy};
+use crate::scene::{from_bevy, rotation_to_bevy, shown, to_bevy};
 
 /// Registered with `embedded_asset!` in `main`.
 const MODEL: &str = "embedded://app/models/booster.glb";
@@ -417,13 +417,6 @@ pub fn glow(
     let Some(frame) = playback.frame() else {
         return;
     };
-    let shown = |on: bool| {
-        if on {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        }
-    };
     let strength = retro_strength(&frame);
     let (mut transform, mut visibility) = envelope.into_inner();
     *visibility = shown(strength > 0.02);
@@ -501,13 +494,9 @@ pub fn sync(
     let t_now = time.elapsed_secs();
     for (mut t, mut visibility, plume) in &mut parts.p2() {
         let burning = is_lit(plume.engine, frame.engines) && frame.thrust_level > 0.02;
-        let shown = burning && !(matches!(plume.layer, PlumeLayer::Diamond(_)) && vacuum > 0.3);
-        *visibility = if shown {
-            Visibility::Visible
-        } else {
-            Visibility::Hidden
-        };
-        if !shown {
+        let visible = burning && !(matches!(plume.layer, PlumeLayer::Diamond(_)) && vacuum > 0.3);
+        *visibility = shown(visible);
+        if !visible {
             continue;
         }
         let e = plume.engine as f32;

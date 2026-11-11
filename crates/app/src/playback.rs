@@ -4,10 +4,18 @@
 use std::time::{Duration, Instant};
 
 use bevy::prelude::*;
-use mission::{Flight, FlightConfig, FlightLog, Frame};
+use mission::{Flight, FlightConfig, FlightLog, Frame, Scenario};
 
 /// Wall-clock time per rendered frame that may be spent simulating ahead.
 const SIM_BUDGET: Duration = Duration::from_millis(25);
+
+/// The flight the viewer opens with, and the default for the panels and `--record`.
+pub const FIRST_FLIGHT: FlightConfig = FlightConfig {
+    scenario: Scenario::FullReturn,
+    seed: 1,
+    dispersed: false,
+    stress: 0.0,
+};
 
 pub enum Source {
     Live(Box<Flight>),

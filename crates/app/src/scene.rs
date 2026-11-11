@@ -32,6 +32,15 @@ pub fn rotation_to_bevy(q: Quat) -> Quat {
     basis * q * basis.inverse()
 }
 
+/// Shown (unless an ancestor is hidden) or hidden.
+pub fn shown(on: bool) -> Visibility {
+    if on {
+        Visibility::Inherited
+    } else {
+        Visibility::Hidden
+    }
+}
+
 /// Local solar time (hours) that sets where the sun is.
 #[derive(Resource)]
 pub struct TimeOfDay {
@@ -137,11 +146,7 @@ pub fn update_sky(
     let wide = matches!(projection, Projection::Perspective(lens) if lens.fov >= STAR_MIN_FOV);
     let (mut sky, mut visibility) = stars.into_inner();
     sky.translation = eye.translation;
-    *visibility = if night > 0.0 && wide {
-        Visibility::Visible
-    } else {
-        Visibility::Hidden
-    };
+    *visibility = shown(night > 0.0 && wide);
 }
 
 /// Small quads facing the center on a sphere, above the horizon, with a few bright stars
