@@ -398,12 +398,13 @@ dead-reckon propellant, and the modeled positions to read the side force.
 
 ## app
 
-- **`playback::Playback`:** the single cursor (flight time) that every view reads.
-  `simulate_to(t)` ticks a live flight until its log covers `t`.
-  - A `Source::Live(Flight)` is ticked until its log covers the cursor, within a 25 ms
-    per-frame budget. The log, not the flight clock, is the bound: the newest frame trails
-    the flight's own time by one tick.
-  - A `Source::Recorded(FlightLog)` is only scrubbed.
+- **`playback::Playback`:** the single cursor (flight time) that every view reads, over
+  a live `Flight`. `simulate_to(t)` ticks the flight until its log covers `t`.
+  - Each frame the flight is ticked until its log covers the cursor, within a 25 ms
+    budget. The log, not the flight clock, is the bound: the newest frame trails the
+    flight's own time by one tick.
+  - `FIRST_FLIGHT` (the drone ship, seed 1, no dispersions) is what the viewer opens with
+    and what `--record` flies unless told otherwise.
   - `frame()` blends neighboring frames for smooth motion.
 - **`scene`:** the world.
   - Sun: `RAW_SUNLIGHT` with a sun disk and cascaded shadows. The `TimeOfDay` resource
@@ -503,8 +504,8 @@ dead-reckon propellant, and the modeled positions to read the side force.
   - A second camera renders only the egui panels over the whole window (bevy_egui's
     side-panel pattern). The 3D camera's viewport is fitted to the free area each frame.
 - **`overlay`:** gizmos for the trail, velocity (cyan), thrust (red), the predicted impact
-  ring, the current G-FOLD plan (magenta) and the pad ring. The `Overlays` resource
-  toggles them.
+  ring, the current G-FOLD plan (magenta) and the pad ring. They are always on in the
+  viewer; the `Overlays` resource turns them off for `--record`.
 - **`audio`:** the sound at the camera, synthesized (no audio files).
   - Engine roar: filtered noise generated on the audio thread (`Roar`, a custom
     `Decodable`), its cutoff and crackle set from the main thread through atomics. Sound
@@ -532,12 +533,16 @@ dead-reckon propellant, and the modeled positions to read the side force.
     loudness, cutoff and crackle at each frame's camera, blended across the frame, plus a
     boom wherever an arrival passes while the pad camera is the view.
 - **`ui`:** a mission-control layout.
-  - Top: status strip.
+  - Top: time, phase, altitude, speed, engines and throttle, propellant, and the outcome.
   - Right: linked-time telemetry plots, decimated to ≤ 1500 points, with a cursor line.
-  - Bottom: play/pause, speed, timeline slider, scenario/seed/dispersed/stress, Fly,
-    Save/Load (`flights/*.json`), camera mode, overlay and sound toggles, time of day,
-    Monte Carlo toggle, and a clickable event log.
-  - Plots include wind speed (truth vs. the flight computer's estimate) and cold gas.
+    Altitude, speed, throttle command and navigation error are shown; thrust, attitude,
+    dynamic pressure, actuators, wind (truth vs. the flight computer's estimate), cold gas
+    and propellant fold under "More plots".
+  - Bottom: play/pause, speed and the timeline slider; then scenario, "Random conditions"
+    (dispersed; seed and stress appear when it is on), Fly, camera mode, sound and the
+    Monte Carlo toggle; then a clickable event log.
+  - The viewer keeps the sun at the default time of day; `--record --hour` sets it.
+    Saving and loading flight logs is the command line's job (`lander fly --save`).
   - The timeline slider only moves the cursor on a drag or click. Otherwise the slider's
     own value nudging would fight playback.
   - **Monte Carlo window:** runs a batch at the chosen stress on a background thread, then

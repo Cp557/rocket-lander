@@ -1,9 +1,9 @@
-//! Mission-control panels: key numbers across the top, stacked telemetry plots on the
-//! right, transport controls and the event log at the bottom, and a Monte Carlo window.
-//! The 3D camera's viewport is fitted to the space left in the middle.
+//! Mission-control panels: key numbers across the top, the main telemetry plots on the
+//! right (the rest folded under "More plots"), the controls and event log at the bottom,
+//! and a Monte Carlo window. The 3D camera's viewport is fitted to the space left in the
+//! middle.
 
 use std::f64::consts::TAU;
-use std::path::{Path, PathBuf};
 
 use bevy::camera::Viewport;
 use bevy::prelude::*;
@@ -13,20 +13,17 @@ use egui::{Color32, LayerId, RichText, Ui, UiBuilder};
 use egui_plot::{Legend, Line, Plot, PlotPoints, PlotUi, Points, VLine};
 use mission::flight::{MAX_HORIZONTAL_SPEED, MAX_VERTICAL_SPEED, PAD_RADIUS, Touchdown};
 use mission::montecarlo::RunResult;
-use mission::{FlightConfig, FlightLog, Frame, Scenario};
+use mission::{FlightConfig, Frame, Scenario};
 use sim::Vehicle;
 
 use crate::audio::Sound;
 use crate::camera::{CameraMode, MainCamera, Orbit};
 use crate::montecarlo::MonteCarlo;
-use crate::overlay::Overlays;
 use crate::playback::{FIRST_FLIGHT, Playback};
-use crate::scene::TimeOfDay;
 
-const FLIGHTS_DIR: &str = "flights";
 const SPEEDS: [f64; 7] = [0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 50.0];
 const MAX_PLOT_POINTS: usize = 1500;
-const PLOT_HEIGHT: f32 = 110.0;
+const PLOT_HEIGHT: f32 = 140.0;
 const TRUTH: Color32 = Color32::from_rgb(90, 170, 255);
 const ESTIMATE: Color32 = Color32::from_rgb(255, 170, 60);
 const GOOD: Color32 = Color32::from_rgb(80, 200, 120);
@@ -36,7 +33,6 @@ pub struct UiState {
     config: FlightConfig,
     monte_carlo_open: bool,
     monte_carlo_runs: usize,
-    status: String,
 }
 
 impl Default for UiState {
@@ -45,7 +41,6 @@ impl Default for UiState {
             config: FIRST_FLIGHT,
             monte_carlo_open: false,
             monte_carlo_runs: 100,
-            status: String::new(),
         }
     }
 }
@@ -56,8 +51,6 @@ pub fn draw(
     mut playback: ResMut<Playback>,
     mut monte_carlo: ResMut<MonteCarlo>,
     mut orbit: ResMut<Orbit>,
-    mut overlays: ResMut<Overlays>,
-    mut time_of_day: ResMut<TimeOfDay>,
     mut sound: ResMut<Sound>,
     mut state: Local<UiState>,
     mut camera: Single<&mut Camera, With<MainCamera>>,
@@ -80,17 +73,9 @@ pub fn draw(
         .height();
     let bottom = egui::Panel::bottom("controls")
         .resizable(true)
-        .default_size(200.0)
+        .default_size(150.0)
         .show(&mut root, |ui| {
-            controls(
-                ui,
-                &mut playback,
-                &mut state,
-                &mut orbit,
-                &mut overlays,
-                &mut time_of_day,
-                &mut sound,
-            )
+            controls(ui, &mut playback, &mut state, &mut orbit, &mut sound)
         })
         .response
         .rect
@@ -138,17 +123,15 @@ fn tilt_deg(frame: &Frame) -> f64 {
 fn status_bar(ui: &mut Ui, playback: &Playback) {
     let Some(f) = playback.frame() else { return };
     let dry = Vehicle::nominal().dry_mass as f32;
-    let per_engine = if f.engines > 0 {
-        f.thrust_level / f.engines as f32
-    } else {
-        0.0
+    let engines = match f.engines {
+        0 => "off".to_string(),
+        n => format!("{n} at {:.0}%", f.thrust_level / n as f32 * 100.0),
     };
-    let nav_error = (f.pos - f.est_pos).length();
     ui.horizontal(|ui| {
         let item = |ui: &mut Ui, label: &str, value: String| {
-            ui.label(RichText::new(label).weak().monospace());
+            ui.label(RichText::new(label).weak());
             ui.label(RichText::new(value).monospace().strong().size(15.0));
-            ui.add_space(10.0);
+            ui.add_space(12.0);
         };
         item(ui, "T+", format!("{:6.1} s", f.t));
         ui.label(
@@ -159,17 +142,14 @@ fn status_bar(ui: &mut Ui, playback: &Playback) {
                 .color(ESTIMATE),
         );
         ui.add_space(10.0);
-        item(ui, "ALT", format!("{:8.0} m", f.pos.z));
-        item(ui, "VS", format!("{:6.1} m/s", f.vel.z));
-        item(ui, "HS", format!("{:5.1} m/s", f.vel.truncate().length()));
-        item(ui, "Q", format!("{:5.1} kPa", f.dynamic_pressure / 1000.0));
+        item(ui, "Altitude", format!("{:6.0} m", f.pos.z));
+        item(ui, "Speed", format!("{:6.1} m/s", f.vel.length()));
+        item(ui, "Engines", engines);
         item(
             ui,
-            "THR",
-            format!("{}x{:3.0}%", f.engines, per_engine * 100.0),
+            "Propellant",
+            format!("{:6.0} kg", (f.mass - dry).max(0.0)),
         );
-        item(ui, "PROP", format!("{:6.0} kg", (f.mass - dry).max(0.0)));
-        item(ui, "NAV ERR", format!("{:4.1} m", nav_error));
         if let Some(outcome) = &playback.log().outcome {
             let (text, color) = if outcome.landed {
                 ("LANDED".to_string(), GOOD)
@@ -186,8 +166,6 @@ fn controls(
     playback: &mut Playback,
     state: &mut UiState,
     orbit: &mut Orbit,
-    overlays: &mut Overlays,
-    time_of_day: &mut TimeOfDay,
     sound: &mut Sound,
 ) {
     let duration = playback.log().duration();
@@ -225,49 +203,18 @@ fn controls(
                     ui.selectable_value(&mut state.config.scenario, scenario, scenario.label());
                 }
             });
-        ui.add(egui::DragValue::new(&mut state.config.seed).prefix("seed "));
-        ui.checkbox(&mut state.config.dispersed, "dispersed");
-        ui.add_enabled(
-            state.config.dispersed,
-            stress_input(&mut state.config.stress),
-        );
+        ui.checkbox(&mut state.config.dispersed, "Random conditions")
+            .on_hover_text(
+                "Wind, vehicle and starting point drawn from the seed. \
+                 Stress adds rougher weather and faults.",
+            );
+        if state.config.dispersed {
+            ui.add(egui::DragValue::new(&mut state.config.seed).prefix("seed "));
+            ui.add(stress_input(&mut state.config.stress));
+        }
         if ui.button("Fly").clicked() {
             *playback = Playback::live(state.config);
-            state.status.clear();
         }
-        ui.separator();
-        ui.add_enabled_ui(playback.is_finished(), |ui| {
-            if ui
-                .button("Save")
-                .on_disabled_hover_text("Available when the flight has ended")
-                .clicked()
-            {
-                let path = log_path(&playback.log().config);
-                state.status = match playback.log().save(&path) {
-                    Ok(()) => format!("saved {}", path.display()),
-                    Err(e) => format!("save failed: {e}"),
-                };
-            }
-        });
-        egui::ComboBox::from_id_salt("load")
-            .selected_text("Load")
-            .show_ui(ui, |ui| {
-                for path in saved_logs() {
-                    let name = path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().into_owned())
-                        .unwrap_or_default();
-                    if ui.selectable_label(false, name).clicked() {
-                        match FlightLog::load(&path) {
-                            Ok(log) => {
-                                *playback = Playback::recorded(log);
-                                state.status = format!("loaded {}", path.display());
-                            }
-                            Err(e) => state.status = format!("load failed: {e}"),
-                        }
-                    }
-                }
-            });
         ui.separator();
         egui::ComboBox::from_id_salt("camera")
             .selected_text(format!("Camera: {}", orbit.mode.label()))
@@ -276,16 +223,9 @@ fn controls(
                     ui.selectable_value(&mut orbit.mode, mode, mode.label());
                 }
             });
-        ui.checkbox(&mut overlays.show, "Overlays");
         ui.checkbox(&mut sound.enabled, "Sound");
-        ui.add(
-            egui::Slider::new(&mut time_of_day.hour, 0.0..=24.0)
-                .text("Time of day [h]")
-                .fixed_decimals(1),
-        );
         ui.separator();
         ui.toggle_value(&mut state.monte_carlo_open, "Monte Carlo");
-        ui.label(RichText::new(&state.status).weak());
     });
     ui.separator();
     let mut jump = None;
@@ -315,40 +255,14 @@ fn stress_input(stress: &mut f64) -> egui::DragValue<'_> {
         .prefix("stress ")
 }
 
-fn log_path(config: &FlightConfig) -> PathBuf {
-    let dispersed = match (config.dispersed, config.stress > 0.0) {
-        (false, _) => String::new(),
-        (true, false) => "-dispersed".to_string(),
-        (true, true) => format!("-dispersed-stress{}", config.stress),
-    };
-    Path::new(FLIGHTS_DIR).join(format!(
-        "{:?}-seed{}{dispersed}.json",
-        config.scenario, config.seed
-    ))
-}
-
-fn saved_logs() -> Vec<PathBuf> {
-    let Ok(dir) = std::fs::read_dir(FLIGHTS_DIR) else {
-        return Vec::new();
-    };
-    let mut paths: Vec<_> = dir
-        .filter_map(|e| e.ok().map(|e| e.path()))
-        .filter(|p| p.extension().is_some_and(|x| x == "json"))
-        .collect();
-    paths.sort();
-    paths
-}
-
 /// One plotted line: name, color and the value it takes from each frame.
 type Series<'a> = (&'a str, Color32, &'a dyn Fn(&Frame) -> f64);
 
 fn plots(ui: &mut Ui, playback: &Playback) {
-    let log = playback.log();
-    let step = (log.frames.len() / MAX_PLOT_POINTS).max(1);
     let dry = Vehicle::nominal().dry_mass;
     let propellant = |f: &Frame| f.mass as f64 - dry;
     let propellant_estimate = |f: &Frame| f.est_mass as f64 - dry;
-    let charts: [(&str, Vec<Series>); 11] = [
+    let main: [(&str, Vec<Series>); 4] = [
         (
             "Altitude [m]",
             vec![
@@ -366,12 +280,23 @@ fn plots(ui: &mut Ui, playback: &Playback) {
             ],
         ),
         (
-            "Thrust [MN]",
-            vec![("thrust", TRUTH, &|f| f.thrust as f64 / 1e6)],
-        ),
-        (
             "Throttle command [%]",
             vec![("per engine", TRUTH, &|f| f.throttle_cmd as f64 * 100.0)],
+        ),
+        (
+            "Navigation [m]",
+            vec![
+                ("position error", TRUTH, &|f| {
+                    (f.pos - f.est_pos).length() as f64
+                }),
+                ("filter 1-sigma", ESTIMATE, &|f| f.pos_sigma as f64),
+            ],
+        ),
+    ];
+    let more: [(&str, Vec<Series>); 7] = [
+        (
+            "Thrust [MN]",
+            vec![("thrust", TRUTH, &|f| f.thrust as f64 / 1e6)],
         ),
         (
             "Attitude [deg]",
@@ -407,15 +332,6 @@ fn plots(ui: &mut Ui, playback: &Playback) {
             ],
         ),
         (
-            "Navigation [m]",
-            vec![
-                ("position error", TRUTH, &|f| {
-                    (f.pos - f.est_pos).length() as f64
-                }),
-                ("filter 1-sigma", ESTIMATE, &|f| f.pos_sigma as f64),
-            ],
-        ),
-        (
             "Cold gas [kg]",
             vec![("left", TRUTH, &|f| f.rcs_gas as f64)],
         ),
@@ -428,27 +344,39 @@ fn plots(ui: &mut Ui, playback: &Playback) {
         ),
     ];
     egui::ScrollArea::vertical().show(ui, |ui| {
-        for (title, series) in charts {
-            ui.label(RichText::new(title).strong());
-            let plot = Plot::new(title)
-                .height(PLOT_HEIGHT)
-                .legend(Legend::default())
-                .link_axis("time", [true, false])
-                .allow_scroll(false);
-            plot.show(ui, |plot| {
-                for (name, color, value) in series {
-                    let points: Vec<[f64; 2]> = log
-                        .frames
-                        .iter()
-                        .step_by(step)
-                        .map(|f| [f.t as f64, value(f)])
-                        .collect();
-                    plot.line(Line::new(name, PlotPoints::from(points)).color(color));
-                }
-                // Unnamed, so it stays out of the legend.
-                plot.vline(VLine::new("", playback.cursor).color(Color32::YELLOW));
-            });
+        for (title, series) in &main {
+            chart(ui, playback, title, series);
         }
+        egui::CollapsingHeader::new("More plots").show(ui, |ui| {
+            for (title, series) in &more {
+                chart(ui, playback, title, series);
+            }
+        });
+    });
+}
+
+/// One titled plot of `series` against flight time, with a cursor line.
+fn chart(ui: &mut Ui, playback: &Playback, title: &str, series: &[Series]) {
+    let log = playback.log();
+    let step = (log.frames.len() / MAX_PLOT_POINTS).max(1);
+    ui.label(RichText::new(title).strong());
+    let plot = Plot::new(title)
+        .height(PLOT_HEIGHT)
+        .legend(Legend::default())
+        .link_axis("time", [true, false])
+        .allow_scroll(false);
+    plot.show(ui, |plot| {
+        for &(name, color, value) in series {
+            let points: Vec<[f64; 2]> = log
+                .frames
+                .iter()
+                .step_by(step)
+                .map(|f| [f.t as f64, value(f)])
+                .collect();
+            plot.line(Line::new(name, PlotPoints::from(points)).color(color));
+        }
+        // Unnamed, so it stays out of the legend.
+        plot.vline(VLine::new("", playback.cursor).color(Color32::YELLOW));
     });
 }
 

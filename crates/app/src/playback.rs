@@ -1,5 +1,5 @@
-//! The playback cursor. Live flights are simulated just far enough ahead of the cursor;
-//! recorded flights are only scrubbed. Every view reads the frame at the cursor.
+//! The playback cursor. The flight is simulated just far enough ahead of the cursor, and
+//! every view reads the frame at the cursor.
 
 use std::time::{Duration, Instant};
 
@@ -11,20 +11,15 @@ const SIM_BUDGET: Duration = Duration::from_millis(25);
 
 /// The flight the viewer opens with, and the default for the panels and `--record`.
 pub const FIRST_FLIGHT: FlightConfig = FlightConfig {
-    scenario: Scenario::FullReturn,
+    scenario: Scenario::DroneShip,
     seed: 1,
     dispersed: false,
     stress: 0.0,
 };
 
-pub enum Source {
-    Live(Box<Flight>),
-    Recorded(Box<FlightLog>),
-}
-
 #[derive(Resource)]
 pub struct Playback {
-    pub source: Source,
+    pub flight: Box<Flight>,
     /// Flight time shown everywhere, in seconds.
     pub cursor: f64,
     pub playing: bool,
@@ -35,16 +30,7 @@ pub struct Playback {
 impl Playback {
     pub fn live(config: FlightConfig) -> Self {
         Self {
-            source: Source::Live(Box::new(Flight::new(config))),
-            cursor: 0.0,
-            playing: true,
-            speed: 1.0,
-        }
-    }
-
-    pub fn recorded(log: FlightLog) -> Self {
-        Self {
-            source: Source::Recorded(Box::new(log)),
+            flight: Box::new(Flight::new(config)),
             cursor: 0.0,
             playing: true,
             speed: 1.0,
@@ -52,26 +38,18 @@ impl Playback {
     }
 
     pub fn log(&self) -> &FlightLog {
-        match &self.source {
-            Source::Live(flight) => flight.log(),
-            Source::Recorded(log) => log.as_ref(),
-        }
+        self.flight.log()
     }
 
-    /// Simulate a live flight until its log covers `t` or the flight ends.
+    /// Simulate the flight until its log covers `t` or the flight ends.
     pub fn simulate_to(&mut self, t: f64) {
-        if let Source::Live(flight) = &mut self.source {
-            while flight.log().duration() < t && !flight.is_done() {
-                flight.tick();
-            }
+        while self.flight.log().duration() < t && !self.flight.is_done() {
+            self.flight.tick();
         }
     }
 
     pub fn is_finished(&self) -> bool {
-        match &self.source {
-            Source::Live(flight) => flight.is_done(),
-            Source::Recorded(_) => true,
-        }
+        self.flight.is_done()
     }
 
     /// The frame at the cursor, blended between its neighbors so motion stays smooth.
@@ -97,16 +75,12 @@ pub fn advance(time: Res<Time>, mut playback: ResMut<Playback>) {
         return;
     }
     let target = playback.cursor + time.delta_secs_f64() * playback.speed;
-    if let Source::Live(flight) = &mut playback.source {
-        let started = Instant::now();
-        // The log, not the flight clock, bounds the cursor: the newest frame trails the
-        // flight's own time by one tick.
-        while flight.log().duration() < target
-            && !flight.is_done()
-            && started.elapsed() < SIM_BUDGET
-        {
-            flight.tick();
-        }
+    let flight = &mut playback.flight;
+    let started = Instant::now();
+    // The log, not the flight clock, bounds the cursor: the newest frame trails the
+    // flight's own time by one tick.
+    while flight.log().duration() < target && !flight.is_done() && started.elapsed() < SIM_BUDGET {
+        flight.tick();
     }
     let end = playback.log().duration();
     playback.cursor = target.min(end);

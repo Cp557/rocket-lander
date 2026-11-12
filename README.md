@@ -89,8 +89,9 @@ cargo run --release -p mission --bin lander -- sweep full --runs 200   # landing
 cargo test --workspace
 ```
 
-In the viewer, drag to orbit and scroll to zoom. Pick the scenario and stress at the
-bottom, switch cameras, scrub the timeline, or open the Monte Carlo window to run a batch
+In the viewer, drag to orbit and scroll to zoom. Pick the scenario at the bottom (tick
+Random conditions to vary the wind, vehicle and starting point, and raise the stress for
+faults), switch cameras, scrub the timeline, or open the Monte Carlo window to run a batch
 and replay its failures. On Linux, install Bevy's system libraries first (listed in
 [CI](.github/workflows/ci.yml)).
 
